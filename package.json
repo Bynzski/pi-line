@@ -1,10 +1,20 @@
 {
   "name": "pi-line",
   "version": "0.1.0",
-  "description": "Interactive terminal statusline builder & runtime for Pi",
+  "description": "Interactive visual statusline builder & typing-box border extension for Pi",
   "type": "module",
+  "license": "MIT",
+  "author": "Bynzski",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Bynzski/pi-line.git"
+  },
   "keywords": [
-    "pi-package"
+    "pi-package",
+    "pi-extension",
+    "statusline",
+    "tui",
+    "terminal-ui"
   ],
   "pi": {
     "extensions": [
