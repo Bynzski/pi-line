@@ -1,23 +1,83 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionContext, ReadonlyFooterDataProvider } from "@earendil-works/pi-coding-agent";
-import type { StatuslineSegment } from "./types.js";
+import type { IconSet, SegmentType, StatuslineSegment } from "./types.js";
 
-// In-memory pub/sub metric bus for dynamic/third-party extensions (inspired by pi-fancy-footer:widget)
+// ---- Dynamic metric bus ----------------------------------------------------
 const dynamicBusRegistry = new Map<string, string>();
-
 export function setBusMetric(key: string, value: string): void {
   dynamicBusRegistry.set(key, value);
 }
-
 export function getBusMetric(key: string): string | undefined {
   return dynamicBusRegistry.get(key);
 }
 
+// ---- Shared git state (works for box and footer, independent of footerData) --
+export const gitState: { branch: string | null; dirty: number } = { branch: null, dirty: 0 };
+
+// ---- Icon sets ---------------------------------------------------------------
+type IconMap = Partial<Record<SegmentType, string>>;
+export const ICONS: Record<IconSet, IconMap> = {
+  nerd: {
+    git_branch: "\uE0A0",
+    git_dirty: "\uF111",
+    model_name: "\uF2DB",
+    provider_name: "\uF0C2",
+    thinking_level: "\uF0EB",
+    token_usage: "\uF1C0",
+    cwd: "\uF07C",
+    context_gauge: "\uF2DB",
+    context_usage: "\uF2DB",
+    cache_hit: "\uF0E7",
+    cache_read: "\uF0E7",
+    extension_statuses: "\uF05A",
+    custom_bus: "\uF12E",
+  },
+  unicode: {
+    git_branch: "⎇",
+    git_dirty: "●",
+    model_name: "◆",
+    provider_name: "☁",
+    thinking_level: "✦",
+    token_usage: "↕",
+    cwd: "▸",
+    context_gauge: "◔",
+    context_usage: "◔",
+    cache_hit: "⚡",
+    cache_read: "⚡",
+    extension_statuses: "ℹ",
+    custom_bus: "◇",
+  },
+  ascii: {
+    git_branch: "git:",
+    model_name: "m:",
+    provider_name: "p:",
+    thinking_level: "think:",
+    token_usage: "tok:",
+    cwd: "dir:",
+    context_gauge: "ctx:",
+    context_usage: "ctx:",
+    cache_hit: "cache:",
+    cache_read: "cache:",
+    extension_statuses: "i:",
+    custom_bus: "#",
+  },
+};
+
+export function iconFor(seg: StatuslineSegment, set: IconSet): string {
+  if (seg.noIcon) return "";
+  if (seg.icon !== undefined) return seg.icon;
+  const glyph = ICONS[set][seg.type];
+  if (!glyph) return "";
+  return set === "ascii" ? glyph : glyph + " ";
+}
+
+// ---- Context -----------------------------------------------------------------
 export interface StatuslineContext {
   gitBranch: string | null;
-  gitDirty: boolean;
+  gitDirty: number;
   modelName: string;
   providerName: string;
+  thinkingLevel: string;
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
@@ -28,7 +88,7 @@ export interface StatuslineContext {
   contextWindow: number | null;
   cacheReadTokens: number;
   cacheWriteTokens: number;
-  cacheHitRatio: number; // 0 to 1
+  cacheHitRatio: number;
   extensionStatuses: string[];
 }
 
@@ -51,37 +111,36 @@ export function extractStatuslineContext(
           output += m.usage.output || 0;
           cacheRead += m.usage.cacheRead || 0;
           cacheWrite += m.usage.cacheWrite || 0;
-          if (m.usage.cost?.total) {
-            cost += m.usage.cost.total;
-          }
+          cost += m.usage.cost?.total || 0;
         }
       }
     }
   } catch {
-    // Session manager might not have active branch yet
+    // no active branch yet
   }
 
-  const branch = footerData ? footerData.getGitBranch() : null;
   const contextUsage = ctx.getContextUsage?.();
 
   let extStatuses: string[] = [];
   if (footerData) {
     try {
-      const statusesMap = footerData.getExtensionStatuses();
-      extStatuses = Array.from(statusesMap.values()).filter((s): s is string => typeof s === "string" && Boolean(s));
+      extStatuses = Array.from(footerData.getExtensionStatuses().values()).filter(
+        (s): s is string => typeof s === "string" && Boolean(s)
+      );
     } catch {
-      // Map retrieval fallback
+      // ignore
     }
   }
 
+  const branch = footerData?.getGitBranch() ?? gitState.branch;
   const totalInput = input + cacheRead;
-  const cacheHitRatio = totalInput > 0 ? cacheRead / totalInput : 0;
 
   return {
     gitBranch: branch,
-    gitDirty: branch?.includes("*") ?? false,
+    gitDirty: gitState.dirty,
     modelName: ctx.model?.id || "no-model",
     providerName: ctx.model?.provider || "",
+    thinkingLevel: ctx.thinkingLevel ?? "off",
     inputTokens: input,
     outputTokens: output,
     totalTokens: input + output,
@@ -92,7 +151,7 @@ export function extractStatuslineContext(
     contextWindow: contextUsage?.contextWindow ?? null,
     cacheReadTokens: cacheRead,
     cacheWriteTokens: cacheWrite,
-    cacheHitRatio,
+    cacheHitRatio: totalInput > 0 ? cacheRead / totalInput : 0,
     extensionStatuses: extStatuses,
   };
 }
@@ -103,29 +162,24 @@ export function formatTokenNumber(n: number): string {
   return `${(n / 1_000_000).toFixed(2)}m`;
 }
 
-export function renderGauge(percent: number, style: "blocks" | "braille" | "percentage" | "compact" = "blocks", width = 5): string {
+export function renderGauge(
+  percent: number,
+  style: "blocks" | "braille" | "percentage" | "compact" = "blocks",
+  width = 5
+): string {
   const p = Math.max(0, Math.min(100, percent));
-  if (style === "percentage") {
-    return `${Math.round(p)}%`;
-  }
-  if (style === "compact") {
-    return `${Math.round(p)}%`;
-  }
-  if (style === "braille") {
-    const brailleChars = ["⣀", "⣤", "⣶", "⣿"];
-    const filledCount = Math.round((p / 100) * width);
-    return "⣿".repeat(filledCount) + "⣀".repeat(Math.max(0, width - filledCount));
-  }
-  // Default blocks: ■■□□□
-  const filledCount = Math.round((p / 100) * width);
-  const emptyCount = Math.max(0, width - filledCount);
-  return "■".repeat(filledCount) + "□".repeat(emptyCount) + ` ${Math.round(p)}%`;
+  if (style === "percentage" || style === "compact") return `${Math.round(p)}%`;
+  const filled = Math.round((p / 100) * width);
+  const empty = Math.max(0, width - filled);
+  if (style === "braille") return "⣿".repeat(filled) + "⣀".repeat(empty);
+  return "■".repeat(filled) + "□".repeat(empty) + ` ${Math.round(p)}%`;
 }
 
 export function evaluateSegment(
   seg: StatuslineSegment,
   data: StatuslineContext,
-  isCompact = false
+  isCompact = false,
+  icons: IconSet = "unicode"
 ): string {
   let val = "";
   switch (seg.type) {
@@ -133,12 +187,11 @@ export function evaluateSegment(
       val = data.gitBranch || "no-git";
       break;
     case "git_dirty":
-      val = data.gitDirty ? "●" : "✓";
+      val = data.gitDirty > 0 ? `${data.gitDirty}` : "clean";
       break;
     case "model_name":
       val = data.modelName;
       if (isCompact && val.length > 12) {
-        // e.g. claude-3-7-sonnet -> sonnet
         const parts = val.split("-");
         val = parts[parts.length - 1] || val;
       }
@@ -146,34 +199,31 @@ export function evaluateSegment(
     case "provider_name":
       val = data.providerName || "ai";
       break;
+    case "thinking_level":
+      val = data.thinkingLevel;
+      break;
     case "token_usage":
-      if (isCompact) {
-        val = formatTokenNumber(data.totalTokens);
-      } else {
-        val = `${formatTokenNumber(data.inputTokens)}/${formatTokenNumber(data.outputTokens)}`;
-      }
+      val = isCompact
+        ? formatTokenNumber(data.totalTokens)
+        : `↑${formatTokenNumber(data.inputTokens)} ↓${formatTokenNumber(data.outputTokens)}`;
       break;
     case "session_cost":
-      val = `${data.cost.toFixed(2)}`;
+      val = data.cost.toFixed(2);
       break;
     case "cwd": {
       const parts = data.cwd.split("/");
       val = parts[parts.length - 1] || data.cwd;
       break;
     }
-    case "context_gauge": {
-      const pct = data.contextUsagePercent ?? 0;
-      val = renderGauge(pct, seg.style || "blocks", isCompact ? 3 : 5);
+    case "context_gauge":
+      val = renderGauge(data.contextUsagePercent ?? 0, seg.style || "blocks", isCompact ? 3 : 5);
       break;
-    }
     case "context_usage":
       val = data.contextUsagePercent !== null ? `${Math.round(data.contextUsagePercent)}%` : "0%";
       break;
-    case "cache_hit": {
-      const pct = Math.round(data.cacheHitRatio * 100);
-      val = `${pct}%`;
+    case "cache_hit":
+      val = `${Math.round(data.cacheHitRatio * 100)}%`;
       break;
-    }
     case "cache_read":
       val = formatTokenNumber(data.cacheReadTokens);
       break;
@@ -188,29 +238,24 @@ export function evaluateSegment(
       break;
   }
 
-  if (!val && (seg.type === "extension_statuses" || seg.type === "custom_bus")) {
-    return "";
-  }
-
-  const prefix = seg.prefix || "";
-  const suffix = seg.suffix || "";
-  const icon = seg.icon || "";
-  return `${icon}${prefix}${val}${suffix}`;
+  if (!val && (seg.type === "extension_statuses" || seg.type === "custom_bus")) return "";
+  return `${iconFor(seg, icons)}${seg.prefix || ""}${val}${seg.suffix || ""}`;
 }
 
 export function getMockContext(): StatuslineContext {
   return {
-    gitBranch: "main*",
-    gitDirty: true,
-    modelName: "claude-3-7-sonnet",
+    gitBranch: "main",
+    gitDirty: 2,
+    modelName: "claude-opus-5",
     providerName: "anthropic",
+    thinkingLevel: "high",
     inputTokens: 42100,
     outputTokens: 12100,
     totalTokens: 54200,
     cost: 0.182,
     cwd: "pi-line",
-    contextUsagePercent: 32,
-    contextTokens: 64000,
+    contextUsagePercent: 34,
+    contextTokens: 68000,
     contextWindow: 200000,
     cacheReadTokens: 38000,
     cacheWriteTokens: 4100,

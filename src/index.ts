@@ -6,142 +6,131 @@ import {
   type KeybindingsManager,
   type ReadonlyFooterDataProvider,
 } from "@earendil-works/pi-coding-agent";
-import { type Component, type EditorTheme, type TUI, truncateToWidth } from "@earendil-works/pi-tui";
+import { type EditorTheme, type TUI, truncateToWidth } from "@earendil-works/pi-tui";
 import { loadConfig, saveConfig } from "./config.js";
-import { extractStatuslineContext, setBusMetric } from "./providers.js";
-import { renderStatusline, formatEditorBorderLine } from "./renderer.js";
+import { extractStatuslineContext, getMockContext, gitState, setBusMetric, type StatuslineContext } from "./providers.js";
+import { renderBoxBorders, renderStatusline } from "./renderer.js";
 import { StatuslineEditorModal } from "./modal.js";
 import type { StatuslineConfig } from "./types.js";
 
 let currentConfig: StatuslineConfig = loadConfig();
-let activeTui: TUI | null = null;
-let activeFooterDataProvider: ReadonlyFooterDataProvider | null = null;
+const activeTuis = new Set<TUI>();
+let footerData: ReadonlyFooterDataProvider | undefined;
+let lastContext: StatuslineContext = getMockContext();
+
+function requestRender(): void {
+  for (const tui of activeTuis) tui.requestRender();
+}
+
+/** Never throws: a stale ctx (after session replacement) falls back to the last good snapshot. */
+function snapshot(ctx: ExtensionContext): StatuslineContext {
+  try {
+    lastContext = extractStatuslineContext(ctx, footerData);
+  } catch {
+    // keep lastContext
+  }
+  return lastContext;
+}
 
 class EmbeddedBorderEditor extends CustomEditor {
-  private extContext: ExtensionContext;
-
-  constructor(
-    tui: TUI,
-    theme: EditorTheme,
-    keybindings: KeybindingsManager,
-    extContext: ExtensionContext
-  ) {
+  constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager, private extCtx: ExtensionContext) {
     super(tui, theme, keybindings, { paddingX: 0 });
-    this.extContext = extContext;
-    activeTui = tui;
+    activeTuis.add(tui);
   }
 
-  render(width: number): string[] {
-    const lines = super.render(width);
-    if (lines.length < 2) return lines;
-
-    const row = currentConfig.rows[0];
-    if (!row) return lines;
-
-    const statusContext = extractStatuslineContext(this.extContext, activeFooterDataProvider || undefined);
-    const borderStyle = currentConfig.style.border || "rounded";
-
-    let topLeft = "╭─";
-    let topRight = "─╮";
-    let bottomLeft = "╰─";
-    let bottomRight = "─╯";
-    let fill = "─";
-
-    if (borderStyle === "single") {
-      topLeft = "┌─";
-      topRight = "─┐";
-      bottomLeft = "└─";
-      bottomRight = "─┘";
-    } else if (borderStyle === "double") {
-      topLeft = "╔═";
-      topRight = "═╗";
-      bottomLeft = "╚═";
-      bottomRight = "═╝";
-      fill = "═";
-    }
-
-    // Top border embeds left segments on left, right segments on right
-    lines[0] = formatEditorBorderLine(
-      row.left,
-      row.right,
-      statusContext,
-      width,
-      topLeft,
-      topRight,
-      fill
+  private borders(width: number) {
+    const cfg = currentConfig;
+    return renderBoxBorders(cfg.box, cfg.breakpoints, cfg.icons, snapshot(this.extCtx), width, "truecolor", (s) =>
+      this.borderColor(s)
     );
+  }
 
-    // Bottom border embeds center segments on left (e.g. context gauge), right segments on right (cost/tokens)
-    lines[lines.length - 1] = formatEditorBorderLine(
-      row.center,
-      row.right,
-      statusContext,
-      width,
-      bottomLeft,
-      bottomRight,
-      fill
-    );
+  // When the editor is scrolled it shows a "N more" hint in the border; keep that behavior.
+  protected renderTopBorder(width: number, hiddenLineCount: number): string {
+    return hiddenLineCount > 0 ? super.renderTopBorder(width, hiddenLineCount) : this.borders(width).top;
+  }
 
-    return lines;
+  protected renderBottomBorder(width: number, hiddenLineCount: number): string {
+    return hiddenLineCount > 0 ? super.renderBottomBorder(width, hiddenLineCount) : this.borders(width).bottom;
   }
 }
 
+/** Apply both surfaces independently: box (editor borders) and statusline (footer). */
 function applyLayout(ctx: ExtensionContext): void {
-  const target = currentConfig.target || "footer";
+  const cfg = currentConfig;
 
-  if (target === "editor-border") {
-    // 1. Clear footer so it's clean and doesn't duplicate info
-    ctx.ui.setFooter(undefined);
-
-    // 2. Wrap custom editor to embed statusline tokens into typing box borders
-    ctx.ui.setEditorComponent((tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) => {
-      return new EmbeddedBorderEditor(tui, theme, keybindings, ctx);
-    });
+  if (cfg.box.enabled) {
+    ctx.ui.setEditorComponent((tui, theme, keybindings) => new EmbeddedBorderEditor(tui, theme, keybindings, ctx));
   } else {
-    // Restore default editor border
     ctx.ui.setEditorComponent(undefined);
+  }
 
-    // Mount custom footer component
-    ctx.ui.setFooter((tui: TUI, _theme, footerData: ReadonlyFooterDataProvider) => {
-      activeTui = tui;
-      activeFooterDataProvider = footerData;
-      const unsub = footerData.onBranchChange(() => tui.requestRender());
-
+  if (cfg.statusline.enabled) {
+    ctx.ui.setFooter((tui, _theme, data) => {
+      activeTuis.add(tui);
+      footerData = data;
+      const unsub = data.onBranchChange(() => tui.requestRender());
       return {
         dispose() {
           unsub();
-          activeTui = null;
-          activeFooterDataProvider = null;
+          activeTuis.delete(tui);
+          if (footerData === data) footerData = undefined;
         },
         invalidate() {},
         render(width: number): string[] {
-          const statusContext = extractStatuslineContext(ctx, footerData);
-          const lines = renderStatusline(currentConfig, statusContext, width);
+          const c = currentConfig;
+          const lines = renderStatusline(c.statusline, c.breakpoints, c.icons, snapshot(ctx), width);
           return lines.map((l) => truncateToWidth(l, width));
         },
       };
     });
+  } else {
+    footerData = undefined;
+    ctx.ui.setFooter(undefined); // Pi's built-in footer
   }
 }
 
 export default function (pi: ExtensionAPI) {
-  // Hook session_start to establish layout
+  const refreshGit = async (cwd: string) => {
+    try {
+      const b = await pi.exec("git", ["branch", "--show-current"], { cwd, timeout: 3000 });
+      if (b.code !== 0) {
+        gitState.branch = null;
+        gitState.dirty = 0;
+      } else {
+        gitState.branch = b.stdout.trim() || "detached";
+        const s = await pi.exec("git", ["status", "--porcelain"], { cwd, timeout: 3000 });
+        gitState.dirty = s.code === 0 ? s.stdout.split("\n").filter(Boolean).length : 0;
+      }
+    } catch {
+      gitState.branch = null;
+      gitState.dirty = 0;
+    }
+    requestRender();
+  };
+
   pi.on("session_start", (_event, ctx) => {
     applyLayout(ctx);
+    void refreshGit(ctx.cwd);
   });
 
-  // Re-render footer / editor on turn boundaries and model changes
-  pi.on("turn_end", () => {
-    activeTui?.requestRender();
+  pi.on("session_shutdown", () => {
+    activeTuis.clear();
+    footerData = undefined;
   });
 
-  pi.on("model_select", () => {
-    activeTui?.requestRender();
+  pi.on("turn_end", (_e, ctx) => {
+    requestRender();
+    void refreshGit(ctx.cwd);
   });
+  pi.on("agent_settled", (_e, ctx) => {
+    void refreshGit(ctx.cwd);
+  });
+  pi.on("model_select", requestRender);
+  pi.on("thinking_level_select", requestRender);
 
-  // Register /statusline-edit command
   pi.registerCommand("statusline-edit", {
-    description: "Open the interactive statusline visual layout builder",
+    description: "Edit the typing-box border and statusline (independent surfaces)",
     handler: async (_args: string, ctx: ExtensionCommandContext) => {
       if (ctx.mode !== "tui") {
         ctx.ui.notify("/statusline-edit is only available in interactive mode", "warning");
@@ -149,51 +138,39 @@ export default function (pi: ExtensionAPI) {
       }
 
       const result = await ctx.ui.custom<StatuslineConfig | undefined>(
-        (tui, theme, _keybindings, done) => {
-          return new StatuslineEditorModal(tui, theme, currentConfig, done);
-        },
-        {
-          overlay: true,
-          overlayOptions: {
-            anchor: "center",
-            width: "94%",
-            maxHeight: 28,
-          },
-        }
+        (tui, theme, _kb, done) => new StatuslineEditorModal(tui, theme, currentConfig, done),
+        { overlay: true, overlayOptions: { anchor: "center", width: "94%", maxHeight: "90%" } }
       );
 
       if (result) {
         currentConfig = result;
         saveConfig(currentConfig);
         applyLayout(ctx);
-        ctx.ui.notify("Statusline updated and applied!", "info");
+        ctx.ui.notify("Statusline saved and applied", "info");
       }
     },
   });
 
-  // Register /statusline-metric command to allow shell scripts or extensions to emit metrics
   pi.registerCommand("statusline-metric", {
-    description: "Set a dynamic metric token for statusline (e.g. /statusline-metric build passing)",
+    description: "Set a metric for a custom_bus segment: /statusline-metric <key> <value>",
     handler: async (args: string, ctx: ExtensionCommandContext) => {
       const parts = args.trim().split(/\s+/);
       if (parts.length < 2) {
         ctx.ui.notify("Usage: /statusline-metric <key> <value>", "warning");
         return;
       }
-      const key = parts[0]!;
-      const val = parts.slice(1).join(" ");
-      setBusMetric(key, val);
-      activeTui?.requestRender();
-      ctx.ui.notify(`Set metric [${key}] = "${val}"`, "info");
+      setBusMetric(parts[0]!, parts.slice(1).join(" "));
+      requestRender();
+      ctx.ui.notify(`Set metric [${parts[0]}]`, "info");
     },
   });
 
-  // Register toggle command
   pi.registerCommand("statusline-toggle", {
-    description: "Refresh or restore custom statusline layout",
+    description: "Re-apply the saved box/statusline layout",
     handler: async (_args: string, ctx: ExtensionCommandContext) => {
+      currentConfig = loadConfig();
       applyLayout(ctx);
-      ctx.ui.notify("Custom statusline layout refreshed", "info");
+      ctx.ui.notify("Layout reloaded from statusline.json", "info");
     },
   });
 }

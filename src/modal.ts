@@ -3,6 +3,7 @@ import {
   type Focusable,
   type TUI,
   matchesKey,
+  parseColor,
   styleText,
   truncateToWidth,
   visibleWidth,
@@ -10,472 +11,348 @@ import {
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import {
   type BorderStyle,
-  type RenderTarget,
+  type BoxBorderStyle,
+  type BoxSlotName,
+  type IconSet,
   type SegmentType,
   type SeparatorStyle,
   type StatuslineConfig,
   type StatuslineSegment,
-  SEPARATOR_PRESETS,
+  emptyRow,
 } from "./types.js";
-import { renderStatusline, formatEditorBorderLine } from "./renderer.js";
+import { boxCorners, renderBoxBorders, renderStatusline } from "./renderer.js";
 import { getMockContext } from "./providers.js";
 
-const AVAILABLE_SEGMENTS: {
-  type: SegmentType;
-  label: string;
-  icon: string;
-  defaultColor: string;
-  defaultBg: string;
-  priority: number;
-  style?: "blocks" | "braille" | "percentage";
-}[] = [
-  { type: "git_branch", label: "Git Branch", icon: " ", defaultColor: "#1e1e2e", defaultBg: "#a6e3a1", priority: 1 },
-  { type: "git_dirty", label: "Git Dirty Status", icon: "", defaultColor: "#f38ba8", defaultBg: "#313244", priority: 3 },
-  { type: "model_name", label: "Active Model", icon: "󰚩 ", defaultColor: "#cdd6f4", defaultBg: "#313244", priority: 1 },
-  { type: "provider_name", label: "Provider Name", icon: "󰄛 ", defaultColor: "#1e1e2e", defaultBg: "#89b4fa", priority: 4 },
-  { type: "context_gauge", label: "Context Gauge (■■□□□)", icon: "󰾆 ", defaultColor: "#1e1e2e", defaultBg: "#f9e2af", priority: 2, style: "blocks" },
-  { type: "context_gauge", label: "Context Gauge (Braille)", icon: "󰾆 ", defaultColor: "#1e1e2e", defaultBg: "#fab387", priority: 2, style: "braille" },
-  { type: "context_usage", label: "Context %", icon: "󰾆 ", defaultColor: "#1e1e2e", defaultBg: "#89dceb", priority: 2 },
-  { type: "cache_hit", label: "Cache Hit Ratio", icon: "⚡", defaultColor: "#1e1e2e", defaultBg: "#94e2d5", priority: 3 },
-  { type: "cache_read", label: "Cache Read Tokens", icon: "󰓅 ", defaultColor: "#1e1e2e", defaultBg: "#a6e3a1", priority: 4 },
-  { type: "token_usage", label: "Token Usage", icon: "󰅒 ", defaultColor: "#1e1e2e", defaultBg: "#89b4fa", priority: 2 },
-  { type: "session_cost", label: "Session Cost ($)", icon: "$", defaultColor: "#1e1e2e", defaultBg: "#f38ba8", priority: 1 },
-  { type: "cwd", label: "Working Dir (basename)", icon: " ", defaultColor: "#cdd6f4", defaultBg: "#45475a", priority: 4 },
-  { type: "extension_statuses", label: "Extension Statuses", icon: "󰋼 ", defaultColor: "#cdd6f4", defaultBg: "#585b70", priority: 3 },
-  { type: "custom_bus", label: "Custom Metric Bus", icon: "󰒋 ", defaultColor: "#cdd6f4", defaultBg: "#45475a", priority: 3 },
-  { type: "text", label: "Custom Static Text", icon: "", defaultColor: "#cdd6f4", defaultBg: "#313244", priority: 5 },
+type Tab = "box" | "statusline" | "global";
+const TABS: { id: Tab; label: string }[] = [
+  { id: "box", label: "Box" },
+  { id: "statusline", label: "Statusline" },
+  { id: "global", label: "Global" },
 ];
 
-const SEPARATOR_CHOICES: SeparatorStyle[] = [
-  "powerline",
-  "powerline-thin",
-  "pill",
-  "slash",
-  "pipe",
-  "bullet",
-  "none",
+const SEGMENT_CATALOG: { type: SegmentType; label: string; color: string; priority: number; style?: StatuslineSegment["style"] }[] = [
+  { type: "git_branch", label: "Git branch", color: "#a6e3a1", priority: 1 },
+  { type: "git_dirty", label: "Git dirty count", color: "#f9e2af", priority: 3 },
+  { type: "model_name", label: "Model", color: "#89b4fa", priority: 1 },
+  { type: "provider_name", label: "Provider", color: "#74c7ec", priority: 4 },
+  { type: "thinking_level", label: "Thinking level", color: "#cba6f7", priority: 2 },
+  { type: "context_gauge", label: "Context gauge (blocks)", color: "#a6e3a1", priority: 2, style: "blocks" },
+  { type: "context_gauge", label: "Context gauge (braille)", color: "#fab387", priority: 2, style: "braille" },
+  { type: "context_usage", label: "Context %", color: "#89dceb", priority: 2 },
+  { type: "token_usage", label: "Tokens in/out", color: "#89b4fa", priority: 2 },
+  { type: "session_cost", label: "Session cost", color: "#f38ba8", priority: 1 },
+  { type: "cache_hit", label: "Cache hit ratio", color: "#94e2d5", priority: 3 },
+  { type: "cache_read", label: "Cache read tokens", color: "#a6e3a1", priority: 4 },
+  { type: "cwd", label: "Directory", color: "#89b4fa", priority: 3 },
+  { type: "extension_statuses", label: "Extension statuses", color: "#cdd6f4", priority: 3 },
+  { type: "custom_bus", label: "Custom metric (bus key)", color: "#cdd6f4", priority: 3 },
+  { type: "text", label: "Static text", color: "#cdd6f4", priority: 5 },
 ];
 
-const BORDER_CHOICES: BorderStyle[] = ["rounded", "single", "double", "top-only", "none"];
-const TARGET_CHOICES: RenderTarget[] = ["footer", "editor-border"];
+const FG_PALETTE: (string | undefined)[] = [undefined, "#cdd6f4", "#a6e3a1", "#89b4fa", "#f9e2af", "#f38ba8", "#cba6f7", "#94e2d5", "#fab387", "#6c7086"];
+const BG_PALETTE: (string | undefined)[] = [undefined, "#1e1e2e", "#313244", "#45475a", "#a6e3a1", "#89b4fa", "#f9e2af", "#f38ba8", "#cba6f7", "#94e2d5"];
+
+const SEPARATORS: SeparatorStyle[] = ["pipe", "slash", "bullet", "none", "powerline", "powerline-thin", "pill"];
+const FOOTER_BORDERS: BorderStyle[] = ["none", "top-only", "single", "rounded", "double"];
+const BOX_BORDERS: BoxBorderStyle[] = ["rounded", "single", "double"];
+const ICON_SETS: IconSet[] = ["unicode", "ascii", "nerd"];
+const COMPACT_STEPS = [60, 70, 85, 100, 120];
+const HIDE_STEPS = [40, 50, 65, 80, 100];
+
+type Item =
+  | { kind: "slot"; label: string; list: StatuslineSegment[]; row?: number }
+  | { kind: "setting"; label: string; value: string; change: (dir: 1 | -1) => void };
+
+function cycle<T>(arr: readonly T[], cur: T, dir: 1 | -1): T {
+  const i = arr.indexOf(cur);
+  return arr[(i + dir + arr.length * 2) % arr.length]!;
+}
 
 export class StatuslineEditorModal implements Component, Focusable {
   focused = true;
 
-  private activeZone: "slots" | "inspector" | "add_dialog" = "slots";
-  private selectedPosition: "left" | "center" | "right" = "left";
-  private selectedSlotIndex = 0;
-  private selectedInspectorField = 0; // 0: target, 1: separator, 2: border
-  private selectedAddTypeIndex = 0;
+  private tab: Tab = "box";
+  private cursor = 0; // index into current tab's items
+  private segIndex = 0; // selected segment inside a slot item
+  private adding = false;
+  private addIndex = 0;
 
   private config: StatuslineConfig;
-  private tui: TUI;
-  private theme: Theme;
-  private done: (result?: StatuslineConfig) => void;
 
   constructor(
-    tui: TUI,
-    theme: Theme,
+    private tui: TUI,
+    private theme: Theme,
     initialConfig: StatuslineConfig,
-    done: (result?: StatuslineConfig) => void
+    private done: (result?: StatuslineConfig) => void
   ) {
-    this.tui = tui;
-    this.theme = theme;
-    // Deep clone config so cancel discards changes
     this.config = JSON.parse(JSON.stringify(initialConfig));
-    this.done = done;
   }
 
-  invalidate(): void {
-    // Required by Component contract
+  invalidate(): void {}
+
+  // ---- model -------------------------------------------------------------
+
+  private items(): Item[] {
+    const c = this.config;
+    if (this.tab === "box") {
+      const slot = (label: string, name: BoxSlotName): Item => ({ kind: "slot", label, list: c.box.slots[name] });
+      return [
+        slot("Top-left   ", "topLeft"),
+        slot("Top-right  ", "topRight"),
+        slot("Bottom-left ", "bottomLeft"),
+        slot("Bottom-right", "bottomRight"),
+        { kind: "setting", label: "Box enabled ", value: c.box.enabled ? "on" : "off", change: () => (c.box.enabled = !c.box.enabled) },
+        { kind: "setting", label: "Box border  ", value: c.box.border, change: (d) => (c.box.border = cycle(BOX_BORDERS, c.box.border, d)) },
+      ];
+    }
+    if (this.tab === "statusline") {
+      const out: Item[] = [];
+      c.statusline.rows.forEach((row, i) => {
+        out.push({ kind: "slot", label: `Row ${i + 1} left  `, list: row.left, row: i });
+        out.push({ kind: "slot", label: `Row ${i + 1} center`, list: row.center, row: i });
+        out.push({ kind: "slot", label: `Row ${i + 1} right `, list: row.right, row: i });
+      });
+      out.push({ kind: "setting", label: "Statusline enabled", value: c.statusline.enabled ? "on" : "off", change: () => (c.statusline.enabled = !c.statusline.enabled) });
+      out.push({ kind: "setting", label: "Frame             ", value: c.statusline.border, change: (d) => (c.statusline.border = cycle(FOOTER_BORDERS, c.statusline.border, d)) });
+      out.push({ kind: "setting", label: "Separators        ", value: c.statusline.separatorStyle, change: (d) => (c.statusline.separatorStyle = cycle(SEPARATORS, c.statusline.separatorStyle, d)) });
+      return out;
+    }
+    return [
+      { kind: "setting", label: "Icon set            ", value: c.icons, change: (d) => (c.icons = cycle(ICON_SETS, c.icons, d)) },
+      { kind: "setting", label: "Compact below (cols)", value: String(c.breakpoints.compactBelow ?? 85), change: (d) => (c.breakpoints.compactBelow = cycle(COMPACT_STEPS, c.breakpoints.compactBelow ?? 85, d)) },
+      { kind: "setting", label: "Hide P3+ below (cols)", value: String(c.breakpoints.hideOptionalBelow ?? 65), change: (d) => (c.breakpoints.hideOptionalBelow = cycle(HIDE_STEPS, c.breakpoints.hideOptionalBelow ?? 65, d)) },
+    ];
   }
 
-  private getActiveSlotList(): StatuslineSegment[] {
-    const row = this.config.rows[0];
-    if (!row) return [];
-    return row[this.selectedPosition];
+  private current(): Item | undefined {
+    const items = this.items();
+    this.cursor = Math.max(0, Math.min(this.cursor, items.length - 1));
+    return items[this.cursor];
   }
+
+  private currentSeg(): StatuslineSegment | undefined {
+    const it = this.current();
+    if (it?.kind !== "slot") return undefined;
+    this.segIndex = Math.max(0, Math.min(this.segIndex, it.list.length - 1));
+    return it.list[this.segIndex];
+  }
+
+  // ---- input -------------------------------------------------------------
 
   handleInput(data: string): void {
+    if (this.adding) return this.handleAdd(data);
+
+    if (matchesKey(data, "escape")) return this.done(undefined);
+    if (data === "s" || data === "S") return this.done(this.config);
+
+    if (matchesKey(data, "tab")) return this.switchTab(1);
+    if (matchesKey(data, "shift+tab")) return this.switchTab(-1);
+
+    const items = this.items();
+    if (matchesKey(data, "up")) {
+      this.cursor = Math.max(0, this.cursor - 1);
+      this.segIndex = 0;
+      return this.tui.requestRender();
+    }
+    if (matchesKey(data, "down")) {
+      this.cursor = Math.min(items.length - 1, this.cursor + 1);
+      this.segIndex = 0;
+      return this.tui.requestRender();
+    }
+
+    const it = this.current();
+    if (!it) return;
+
+    if (it.kind === "setting") {
+      if (matchesKey(data, "left")) it.change(-1);
+      else if (matchesKey(data, "right") || matchesKey(data, "enter")) it.change(1);
+      else return;
+      return this.tui.requestRender();
+    }
+
+    this.handleSlotKey(data, it, items);
+  }
+
+  private switchTab(dir: 1 | -1): void {
+    const i = TABS.findIndex((t) => t.id === this.tab);
+    this.tab = TABS[(i + dir + TABS.length) % TABS.length]!.id;
+    this.cursor = 0;
+    this.segIndex = 0;
+    this.tui.requestRender();
+  }
+
+  private handleSlotKey(data: string, it: Extract<Item, { kind: "slot" }>, items: Item[]): void {
+    const list = it.list;
+    const seg = this.currentSeg();
+    let changed = true;
+
+    if (matchesKey(data, "left")) this.segIndex = Math.max(0, this.segIndex - 1);
+    else if (matchesKey(data, "right")) this.segIndex = Math.min(list.length - 1, this.segIndex + 1);
+    else if (data === "[" && seg && this.segIndex > 0) {
+      [list[this.segIndex - 1], list[this.segIndex]] = [list[this.segIndex]!, list[this.segIndex - 1]!];
+      this.segIndex--;
+    } else if (data === "]" && seg && this.segIndex < list.length - 1) {
+      [list[this.segIndex + 1], list[this.segIndex]] = [list[this.segIndex]!, list[this.segIndex + 1]!];
+      this.segIndex++;
+    } else if ((data === "m" || data === "M") && seg) {
+      // move to the next slot in this tab (wraps)
+      const slots = items.map((x, i) => ({ x, i })).filter((p) => p.x.kind === "slot");
+      const pos = slots.findIndex((p) => p.i === this.cursor);
+      const next = slots[(pos + 1) % slots.length]!;
+      list.splice(this.segIndex, 1);
+      (next.x as Extract<Item, { kind: "slot" }>).list.push(seg);
+      this.cursor = next.i;
+      this.segIndex = (next.x as Extract<Item, { kind: "slot" }>).list.length - 1;
+    } else if ((data === "p" || data === "P") && seg) seg.priority = ((seg.priority ?? 2) % 5) + 1;
+    else if (data === "c" && seg) seg.color = cycle(FG_PALETTE, seg.color, 1);
+    else if (data === "g" && seg) seg.bg = cycle(BG_PALETTE, seg.bg, 1);
+    else if (data === "i" && seg) seg.noIcon = !seg.noIcon;
+    else if (data === "a" || data === "A") {
+      this.adding = true;
+      this.addIndex = 0;
+    } else if ((data === "d" || data === "x") && seg) {
+      list.splice(this.segIndex, 1);
+      this.segIndex = Math.max(0, Math.min(this.segIndex, list.length - 1));
+    } else if (data === "n" && this.tab === "statusline") {
+      this.config.statusline.rows.push(emptyRow());
+    } else if (data === "X" && this.tab === "statusline" && it.row !== undefined && this.config.statusline.rows.length > 1) {
+      this.config.statusline.rows.splice(it.row, 1);
+      this.cursor = Math.max(0, this.cursor - 3);
+    } else changed = false;
+
+    if (changed) this.tui.requestRender();
+  }
+
+  private handleAdd(data: string): void {
     if (matchesKey(data, "escape")) {
-      if (this.activeZone === "add_dialog") {
-        this.activeZone = "slots";
-        this.tui.requestRender();
-        return;
+      this.adding = false;
+    } else if (matchesKey(data, "up")) {
+      this.addIndex = Math.max(0, this.addIndex - 1);
+    } else if (matchesKey(data, "down")) {
+      this.addIndex = Math.min(SEGMENT_CATALOG.length - 1, this.addIndex + 1);
+    } else if (matchesKey(data, "enter")) {
+      const it = this.current();
+      if (it?.kind === "slot") {
+        const def = SEGMENT_CATALOG[this.addIndex]!;
+        it.list.push({
+          id: `seg-${Date.now()}`,
+          type: def.type,
+          priority: def.priority,
+          color: def.color,
+          style: def.style,
+          text: def.type === "text" ? "text" : def.type === "custom_bus" ? "key" : undefined,
+        });
+        this.segIndex = it.list.length - 1;
       }
-      this.done(undefined);
-      return;
-    }
-
-    if (this.activeZone === "add_dialog") {
-      this.handleAddDialogInput(data);
-      return;
-    }
-
-    if (data === "s" || data === "S") {
-      this.done(this.config);
-      return;
-    }
-
-    if (matchesKey(data, "tab")) {
-      this.activeZone = this.activeZone === "slots" ? "inspector" : "slots";
-      this.tui.requestRender();
-      return;
-    }
-
-    if (this.activeZone === "slots") {
-      this.handleSlotsInput(data);
-    } else if (this.activeZone === "inspector") {
-      this.handleInspectorInput(data);
-    }
+      this.adding = false;
+    } else return;
+    this.tui.requestRender();
   }
 
-  private handleSlotsInput(data: string): void {
-    const row = this.config.rows[0]!;
-
-    // Position switching via numeric keys (1=left, 2=center, 3=right)
-    if (data === "1" || data === "l" || data === "L") {
-      this.selectedPosition = "left";
-      this.selectedSlotIndex = Math.min(this.selectedSlotIndex, Math.max(0, row.left.length - 1));
-      this.tui.requestRender();
-      return;
-    }
-    if (data === "2" || data === "c" || data === "C") {
-      this.selectedPosition = "center";
-      this.selectedSlotIndex = Math.min(this.selectedSlotIndex, Math.max(0, row.center.length - 1));
-      this.tui.requestRender();
-      return;
-    }
-    if (data === "3" || data === "r" || data === "R") {
-      this.selectedPosition = "right";
-      this.selectedSlotIndex = Math.min(this.selectedSlotIndex, Math.max(0, row.right.length - 1));
-      this.tui.requestRender();
-      return;
-    }
-
-    const slots = this.getActiveSlotList();
-
-    // Up / Down navigate sections
-    if (matchesKey(data, "up")) {
-      if (this.selectedPosition === "right") this.selectedPosition = "center";
-      else if (this.selectedPosition === "center") this.selectedPosition = "left";
-      this.selectedSlotIndex = Math.min(this.selectedSlotIndex, Math.max(0, this.getActiveSlotList().length - 1));
-      this.tui.requestRender();
-      return;
-    }
-
-    if (matchesKey(data, "down")) {
-      if (this.selectedPosition === "left") this.selectedPosition = "center";
-      else if (this.selectedPosition === "center") this.selectedPosition = "right";
-      this.selectedSlotIndex = Math.min(this.selectedSlotIndex, Math.max(0, this.getActiveSlotList().length - 1));
-      this.tui.requestRender();
-      return;
-    }
-
-    // Left / Right navigation between segments in active section
-    if (matchesKey(data, "left")) {
-      if (this.selectedSlotIndex > 0) {
-        this.selectedSlotIndex--;
-      }
-      this.tui.requestRender();
-      return;
-    }
-
-    if (matchesKey(data, "right")) {
-      if (this.selectedSlotIndex < slots.length - 1) {
-        this.selectedSlotIndex++;
-      }
-      this.tui.requestRender();
-      return;
-    }
-
-    // Shift segment order inside row: [ or ]
-    if (data === "[" && slots.length > 1 && this.selectedSlotIndex > 0) {
-      const temp = slots[this.selectedSlotIndex]!;
-      slots[this.selectedSlotIndex] = slots[this.selectedSlotIndex - 1]!;
-      slots[this.selectedSlotIndex - 1] = temp;
-      this.selectedSlotIndex--;
-      this.tui.requestRender();
-      return;
-    }
-    if (data === "]" && slots.length > 1 && this.selectedSlotIndex < slots.length - 1) {
-      const temp = slots[this.selectedSlotIndex]!;
-      slots[this.selectedSlotIndex] = slots[this.selectedSlotIndex + 1]!;
-      slots[this.selectedSlotIndex + 1] = temp;
-      this.selectedSlotIndex++;
-      this.tui.requestRender();
-      return;
-    }
-
-    // Move segment between sections: m or M (Left -> Center -> Right -> Left)
-    if ((data === "m" || data === "M") && slots.length > 0) {
-      const seg = slots.splice(this.selectedSlotIndex, 1)[0]!;
-      if (this.selectedPosition === "left") {
-        row.center.push(seg);
-        this.selectedPosition = "center";
-        this.selectedSlotIndex = row.center.length - 1;
-      } else if (this.selectedPosition === "center") {
-        row.right.push(seg);
-        this.selectedPosition = "right";
-        this.selectedSlotIndex = row.right.length - 1;
-      } else {
-        row.left.push(seg);
-        this.selectedPosition = "left";
-        this.selectedSlotIndex = row.left.length - 1;
-      }
-      this.tui.requestRender();
-      return;
-    }
-
-    // Toggle priority: p or P (cycles priority 1 -> 2 -> 3 -> 4 -> 5 -> 1)
-    if ((data === "p" || data === "P") && slots.length > 0) {
-      const cur = slots[this.selectedSlotIndex]!;
-      const nextPriority = ((cur.priority ?? 2) % 5) + 1;
-      cur.priority = nextPriority;
-      this.tui.requestRender();
-      return;
-    }
-
-    // Add segment: 'a'
-    if (data === "a" || data === "A") {
-      this.activeZone = "add_dialog";
-      this.selectedAddTypeIndex = 0;
-      this.tui.requestRender();
-      return;
-    }
-
-    // Delete segment: 'd' or 'x'
-    if ((data === "d" || data === "x") && slots.length > 0) {
-      slots.splice(this.selectedSlotIndex, 1);
-      if (this.selectedSlotIndex >= slots.length) {
-        this.selectedSlotIndex = Math.max(0, slots.length - 1);
-      }
-      this.tui.requestRender();
-      return;
-    }
-  }
-
-  private handleInspectorInput(data: string): void {
-    if (matchesKey(data, "up")) {
-      this.selectedInspectorField = (this.selectedInspectorField - 1 + 3) % 3;
-      this.tui.requestRender();
-      return;
-    }
-    if (matchesKey(data, "down")) {
-      this.selectedInspectorField = (this.selectedInspectorField + 1) % 3;
-      this.tui.requestRender();
-      return;
-    }
-
-    if (this.selectedInspectorField === 0) {
-      // Render Target toggle (footer vs editor-border)
-      const current = this.config.target || "footer";
-      const next = current === "footer" ? "editor-border" : "footer";
-      if (matchesKey(data, "left") || matchesKey(data, "right") || matchesKey(data, "enter")) {
-        this.config.target = next;
-        this.tui.requestRender();
-      }
-      return;
-    }
-
-    if (this.selectedInspectorField === 1) {
-      // Separator style cycling
-      const current = this.config.style.separatorStyle || "powerline";
-      const idx = SEPARATOR_CHOICES.indexOf(current);
-      if (matchesKey(data, "right") || matchesKey(data, "enter")) {
-        const next = SEPARATOR_CHOICES[(idx + 1) % SEPARATOR_CHOICES.length]!;
-        this.config.style.separatorStyle = next;
-        this.config.style.separators = SEPARATOR_PRESETS[next];
-      } else if (matchesKey(data, "left")) {
-        const prev = SEPARATOR_CHOICES[(idx - 1 + SEPARATOR_CHOICES.length) % SEPARATOR_CHOICES.length]!;
-        this.config.style.separatorStyle = prev;
-        this.config.style.separators = SEPARATOR_PRESETS[prev];
-      }
-      this.tui.requestRender();
-      return;
-    }
-
-    if (this.selectedInspectorField === 2) {
-      // Border style cycling
-      const current = this.config.style.border || "rounded";
-      const idx = BORDER_CHOICES.indexOf(current);
-      if (matchesKey(data, "right") || matchesKey(data, "enter")) {
-        this.config.style.border = BORDER_CHOICES[(idx + 1) % BORDER_CHOICES.length]!;
-      } else if (matchesKey(data, "left")) {
-        const prev = BORDER_CHOICES[(idx - 1 + BORDER_CHOICES.length) % BORDER_CHOICES.length]!;
-        this.config.style.border = prev;
-      }
-      this.tui.requestRender();
-      return;
-    }
-  }
-
-  private handleAddDialogInput(data: string): void {
-    if (matchesKey(data, "up")) {
-      if (this.selectedAddTypeIndex > 0) this.selectedAddTypeIndex--;
-      this.tui.requestRender();
-      return;
-    }
-    if (matchesKey(data, "down")) {
-      if (this.selectedAddTypeIndex < AVAILABLE_SEGMENTS.length - 1) this.selectedAddTypeIndex++;
-      this.tui.requestRender();
-      return;
-    }
-    if (matchesKey(data, "enter")) {
-      const chosen = AVAILABLE_SEGMENTS[this.selectedAddTypeIndex]!;
-      const newSeg: StatuslineSegment = {
-        id: `seg-${Date.now()}`,
-        type: chosen.type,
-        priority: chosen.priority,
-        icon: chosen.icon,
-        color: chosen.defaultColor,
-        bg: chosen.defaultBg,
-        style: chosen.style,
-      };
-      const slots = this.getActiveSlotList();
-      slots.push(newSeg);
-      this.selectedSlotIndex = slots.length - 1;
-      this.activeZone = "slots";
-      this.tui.requestRender();
-      return;
-    }
-  }
+  // ---- rendering ---------------------------------------------------------
 
   render(width: number): string[] {
-    const lines: string[] = [];
-    const contentWidth = Math.max(50, width - 4);
+    const w = Math.max(44, width - 4); // content width
+    const t = this.theme;
+    const accent = (s: string) => t.fg("accent", s);
+    const dim = (s: string) => t.fg("dim", s);
+    const bold = (s: string) => t.style(s, { bold: true, fg: "accent" });
+    const mode = t.getColorMode();
+    const line = (content: string) => accent("│ ") + truncateToWidth(content, w, "") + " ".repeat(Math.max(0, w - visibleWidth(content))) + accent(" │");
+    const rule = (l: string, r: string) => accent(l + "─".repeat(w + 2) + r);
 
-    const bColor = (s: string) => this.theme.fg("accent", s);
-    const dim = (s: string) => this.theme.fg("dim", s);
-    const title = (s: string) => this.theme.style(s, { bold: true, fg: "accent" });
+    const maxH = Math.max(16, Math.floor(this.tui.terminal.rows * 0.9));
+    const c = this.config;
+    const mock = getMockContext();
 
-    // Top border of modal frame
-    lines.push(bColor("╭" + "─".repeat(contentWidth + 2) + "╮"));
+    // --- header + tabs (one line)
+    const head: string[] = [rule("╭", "╮"), line(bold("pi-line ") + this.tabBar()), rule("├", "┤")];
 
-    // Header Title
-    const headerTitle = " 󰌌  PI STATUSLINE & BORDER BUILDER ";
-    const headerPad = Math.max(0, contentWidth + 2 - visibleWidth(headerTitle));
-    lines.push(bColor("│") + title(headerTitle) + " ".repeat(headerPad) + bColor("│"));
-    lines.push(bColor("├" + "─".repeat(contentWidth + 2) + "┤"));
-
-    // 1. LIVE PREVIEW PANE
-    const target = this.config.target || "footer";
-    const borderLabel = `Target: ${target} | Border: ${this.config.style.border || "rounded"} | Sep: ${this.config.style.separatorStyle || "powerline"}`;
-    const pHeader = ` 1. LIVE PREVIEW PANE (${borderLabel})`;
-    lines.push(bColor("│") + dim(pHeader) + " ".repeat(Math.max(0, contentWidth + 2 - visibleWidth(pHeader))) + bColor("│"));
-
-    const mockContext = getMockContext();
-    if (target === "editor-border") {
-      // Simulate typing box with embedded border preview
-      const row = this.config.rows[0] || { left: [], center: [], right: [] };
-      const topBorder = formatEditorBorderLine(row.left, row.right, mockContext, contentWidth - 4, "╭─", "─╮");
-      lines.push(bColor("│  ") + topBorder + bColor("  │"));
-      const promptLine = "│  │ make the README say what the harness brings █" + " ".repeat(Math.max(0, contentWidth - 52)) + "│  │";
-      lines.push(bColor(promptLine));
-      const bottomBorder = formatEditorBorderLine(row.center, row.right, mockContext, contentWidth - 4, "╰─", "─╯");
-      lines.push(bColor("│  ") + bottomBorder + bColor("  │"));
+    // --- preview: whole composition
+    const prev: string[] = [];
+    const prompt = "make the README say what the harness brings █";
+    if (c.box.enabled) {
+      const b = renderBoxBorders(c.box, c.breakpoints, c.icons, mock, w, mode, accent);
+      const v = accent(boxCorners(c.box.border).v);
+      prev.push(line(b.top));
+      prev.push(line(v + " " + truncateToWidth(prompt, w - 4, "…") + " ".repeat(Math.max(0, w - 4 - visibleWidth(truncateToWidth(prompt, w - 4, "…")))) + " " + v));
+      prev.push(line(b.bottom));
     } else {
-      const previewLines = renderStatusline(this.config, mockContext, contentWidth);
-      for (const pLine of previewLines) {
-        const pW = visibleWidth(pLine);
-        const pad = " ".repeat(Math.max(0, contentWidth - pW));
-        lines.push(bColor("│ ") + pLine + pad + bColor(" │"));
-      }
+      prev.push(line(dim("─".repeat(w))));
+      prev.push(line(truncateToWidth(prompt, w, "…")));
+      prev.push(line(dim("─".repeat(w))));
     }
-
-    lines.push(bColor("├" + "─".repeat(contentWidth + 2) + "┤"));
-
-    // 2. SEGMENT ARRANGEMENT (Slot Builder)
-    const slotZoneActive = this.activeZone === "slots";
-    const slotHeader = ` 2. SEGMENT ARRANGEMENT ${slotZoneActive ? "◄ ACTIVE (Tab: Inspector | ↑/↓: Section)" : ""}`;
-    lines.push(bColor("│") + (slotZoneActive ? title(slotHeader) : dim(slotHeader)) + " ".repeat(Math.max(0, contentWidth + 2 - visibleWidth(slotHeader))) + bColor("│"));
-
-    const row = this.config.rows[0] || { left: [], center: [], right: [] };
-    const renderSlotsRow = (pos: "left" | "center" | "right", label: string, shortcut: string) => {
-      const isPosSelected = this.selectedPosition === pos && slotZoneActive;
-      const list = row[pos] || [];
-      const prefix = `  ${isPosSelected ? "▶" : " "} [${shortcut}] ${label}: `;
-      let segsStr = "";
-
-      if (list.length === 0) {
-        segsStr = dim("[empty]");
-      } else {
-        segsStr = list
-          .map((seg, i) => {
-            const isSegSelected = isPosSelected && this.selectedSlotIndex === i;
-            const prioBadge = seg.priority ? ` P${seg.priority}` : "";
-            const text = `${seg.type}${prioBadge}`;
-            if (isSegSelected) {
-              return this.theme.style(`[▶ ${text} ◀]`, { bold: true, fg: "success", bg: "selectedBg" });
-            }
-            return `[${text}]`;
-          })
-          .join(" ");
-      }
-
-      const fullLine = prefix + segsStr;
-      const pad = " ".repeat(Math.max(0, contentWidth + 2 - visibleWidth(fullLine)));
-      return bColor("│") + fullLine + pad + bColor("│");
-    };
-
-    lines.push(renderSlotsRow("left", "Left  ", "1/L"));
-    lines.push(renderSlotsRow("center", "Center", "2/C"));
-    lines.push(renderSlotsRow("right", "Right ", "3/R"));
-
-    const actionsLine = "  Keys: [↑/↓] Section  [←/→] Select  [ [ / ] ] Move  [m] Move Section  [p] Priority  [a] Add  [d] Delete";
-    lines.push(bColor("│") + dim(actionsLine) + " ".repeat(Math.max(0, contentWidth + 2 - visibleWidth(actionsLine))) + bColor("│"));
-
-    lines.push(bColor("├" + "─".repeat(contentWidth + 2) + "┤"));
-
-    // 3. STYLE & DIVIDER INSPECTOR
-    const inspZoneActive = this.activeZone === "inspector";
-    const inspHeader = ` 3. STYLE & LOCATION INSPECTOR ${inspZoneActive ? "◄ ACTIVE (Tab to switch)" : ""}`;
-    lines.push(bColor("│") + (inspZoneActive ? title(inspHeader) : dim(inspHeader)) + " ".repeat(Math.max(0, contentWidth + 2 - visibleWidth(inspHeader))) + bColor("│"));
-
-    // Target row (footer vs editor-border)
-    const curTarget = this.config.target || "footer";
-    const targetStr = TARGET_CHOICES.map((t) => (t === curTarget ? this.theme.style(`❯ ${t} ❮`, { bold: true, fg: "accent" }) : t)).join(" | ");
-    const targetFocusMarker = inspZoneActive && this.selectedInspectorField === 0 ? "▶ " : "  ";
-    const targetFull = `  ${targetFocusMarker}Render Target: [ ${targetStr} ]`;
-    lines.push(bColor("│") + targetFull + " ".repeat(Math.max(0, contentWidth + 2 - visibleWidth(targetFull))) + bColor("│"));
-
-    // Separators row
-    const curSep = this.config.style.separatorStyle || "powerline";
-    const sepStr = SEPARATOR_CHOICES.map((s) => (s === curSep ? this.theme.style(`❯ ${s} ❮`, { bold: true, fg: "accent" }) : s)).join(" | ");
-    const sepFocusMarker = inspZoneActive && this.selectedInspectorField === 1 ? "▶ " : "  ";
-    const sepFull = `  ${sepFocusMarker}Separators:    [ ${sepStr} ]`;
-    lines.push(bColor("│") + sepFull + " ".repeat(Math.max(0, contentWidth + 2 - visibleWidth(sepFull))) + bColor("│"));
-
-    // Border row
-    const curBorder = this.config.style.border || "rounded";
-    const borderStr = BORDER_CHOICES.map((b) => (b === curBorder ? this.theme.style(`❯ ${b} ❮`, { bold: true, fg: "accent" }) : b)).join(" | ");
-    const borderFocusMarker = inspZoneActive && this.selectedInspectorField === 2 ? "▶ " : "  ";
-    const borderFull = `  ${borderFocusMarker}Border Box:    [ ${borderStr} ]`;
-    lines.push(bColor("│") + borderFull + " ".repeat(Math.max(0, contentWidth + 2 - visibleWidth(borderFull))) + bColor("│"));
-
-    // If Add Dialog is open, overlay options
-    if (this.activeZone === "add_dialog") {
-      lines.push(bColor("├" + "─".repeat(contentWidth + 2) + "┤"));
-      const addHeader = "  SELECT WIDGET TYPE TO ADD (↑/↓ Navigate, Enter Select, Esc Cancel):";
-      lines.push(bColor("│") + this.theme.style(addHeader, { bold: true, fg: "warning" }) + " ".repeat(Math.max(0, contentWidth + 2 - visibleWidth(addHeader))) + bColor("│"));
-      AVAILABLE_SEGMENTS.forEach((segDef, idx) => {
-        const isSel = idx === this.selectedAddTypeIndex;
-        const pointer = isSel ? " ▶ " : "   ";
-        const itemText = `${pointer}${segDef.icon} ${segDef.label} (type: ${segDef.type}, P${segDef.priority})`;
-        const styledItem = isSel ? this.theme.style(itemText, { bold: true, fg: "success", bg: "selectedBg" }) : itemText;
-        lines.push(bColor("│") + styledItem + " ".repeat(Math.max(0, contentWidth + 2 - visibleWidth(itemText))) + bColor("│"));
-      });
+    if (c.statusline.enabled) {
+      for (const l of renderStatusline(c.statusline, c.breakpoints, c.icons, mock, w, mode)) prev.push(line(l));
+    } else {
+      prev.push(line(dim("(statusline off — Pi's built-in footer is shown)")));
     }
+    prev.push(rule("├", "┤"));
 
-    lines.push(bColor("├" + "─".repeat(contentWidth + 2) + "┤"));
+    // --- footer / help
+    const it = this.current();
+    const help1 =
+      it?.kind === "slot"
+        ? "←/→ select  [ ] reorder  m move  a add  d delete  p priority  c fg  g bg  i icon"
+        : "←/→ or Enter: change value";
+    const help2 = "↑/↓ item  Tab/Shift+Tab switch tab  " + (this.tab === "statusline" ? "n add row  X del row  " : "") + "s save  Esc cancel";
+    const foot: string[] = [rule("├", "┤"), line(dim(help1)), line(dim(help2)), rule("╰", "╯")];
 
-    // Footer shortcuts
-    const footerShortcuts = " [s] Save & Apply    [Esc] Cancel    [Tab] Switch Zone ";
-    lines.push(bColor("│") + this.theme.style(footerShortcuts, { bold: true, fg: "success" }) + " ".repeat(Math.max(0, contentWidth + 2 - visibleWidth(footerShortcuts))) + bColor("│"));
+    // --- panel (scrolls to keep cursor visible)
+    const budget = Math.max(4, maxH - head.length - prev.length - foot.length - 1);
+    const panel = this.adding ? this.renderAdd(line, dim, budget) : this.renderPanel(line, dim, budget);
 
-    // Bottom border of modal frame
-    lines.push(bColor("╰" + "─".repeat(contentWidth + 2) + "╯"));
+    return [...head, ...prev, ...panel, ...foot].map((l) => truncateToWidth(l, width));
+  }
 
-    return lines.map((l) => truncateToWidth(l, width));
+  private tabBar(): string {
+    return TABS.map((tb) => (tb.id === this.tab ? this.theme.style(` ${tb.label} `, { bold: true, fg: "success", bg: "selectedBg" }) : this.theme.fg("dim", ` ${tb.label} `))).join("  ");
+  }
+
+  private swatch(seg: StatuslineSegment): string {
+    const mode = this.theme.getColorMode();
+    const fg = seg.color ? parseColor(seg.color) : undefined;
+    const bg = seg.bg ? parseColor(seg.bg) : undefined;
+    return styleText("●", { fg: fg ?? bg }, mode);
+  }
+
+  private renderPanel(line: (s: string) => string, dim: (s: string) => string, budget: number): string[] {
+    const items = this.items();
+    this.current();
+    const rows = items.map((item, idx) => {
+      const selected = idx === this.cursor;
+      const ptr = selected ? this.theme.fg("accent", "▶ ") : "  ";
+      if (item.kind === "setting") {
+        const val = selected ? this.theme.style(`‹ ${item.value} ›`, { bold: true, fg: "success" }) : item.value;
+        return line(`${ptr}${item.label}: ${val}`);
+      }
+      const segs = item.list.length
+        ? item.list
+            .map((s, i) => {
+              const txt = `${s.type}${s.priority ? ` P${s.priority}` : ""}`;
+              return selected && i === this.segIndex
+                ? this.theme.style(`[${txt}]`, { bold: true, fg: "success", bg: "selectedBg" })
+                : `${this.swatch(s)} ${txt}`;
+            })
+            .join("  ")
+        : dim("(empty — press a to add)");
+      return line(`${ptr}${item.label}: ${segs}`);
+    });
+
+    if (rows.length <= budget) return rows;
+    const start = Math.max(0, Math.min(this.cursor - Math.floor(budget / 2), rows.length - budget));
+    return rows.slice(start, start + budget);
+  }
+
+  private renderAdd(line: (s: string) => string, dim: (s: string) => string, budget: number): string[] {
+    const header = line(this.theme.style("Add segment — ↑/↓ choose, Enter add, Esc cancel", { bold: true, fg: "warning" }));
+    const rows = SEGMENT_CATALOG.map((d, i) => {
+      const sel = i === this.addIndex;
+      const txt = `${sel ? "▶ " : "  "}${d.label}  ${dim(`(${d.type}, P${d.priority})`)}`;
+      return line(sel ? this.theme.style(txt, { bold: true, fg: "success" }) : txt);
+    });
+    const room = Math.max(3, budget - 1);
+    const start = Math.max(0, Math.min(this.addIndex - Math.floor(room / 2), rows.length - room));
+    return [header, ...rows.slice(start, start + room)];
   }
 }

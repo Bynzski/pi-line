@@ -3,6 +3,7 @@ export type SegmentType =
   | "git_dirty"
   | "model_name"
   | "provider_name"
+  | "thinking_level"
   | "token_usage"
   | "session_cost"
   | "cwd"
@@ -15,45 +16,37 @@ export type SegmentType =
   | "text";
 
 export interface StatuslineSegment {
-  id: string; // unique identifier for the segment in editor
+  id: string;
   type: SegmentType;
-  priority?: number; // 1 (highest/critical) to 5 (optional/collapsible)
-  color?: string; // hex or ansi color, e.g. "#89b4fa"
-  bg?: string; // hex or ansi background, e.g. "#1e1e2e"
+  priority?: number; // 1 (critical) .. 5 (optional)
+  color?: string; // fg hex
+  bg?: string; // bg hex
   prefix?: string;
   suffix?: string;
-  icon?: string;
-  format?: string; // e.g. "{used}/{total}" or "{percent}%"
-  style?: "blocks" | "braille" | "percentage" | "compact"; // for context_gauge
-  text?: string; // For static text type or custom_bus key
+  icon?: string; // explicit override; otherwise taken from the icon set
+  noIcon?: boolean;
+  style?: "blocks" | "braille" | "percentage" | "compact"; // context_gauge
+  text?: string; // static text, or custom_bus key
 }
 
+export type IconSet = "nerd" | "unicode" | "ascii";
 export type BorderStyle = "none" | "single" | "rounded" | "double" | "top-only";
+export type BoxBorderStyle = "rounded" | "single" | "double";
 export type SeparatorStyle = "none" | "powerline" | "powerline-thin" | "slash" | "pipe" | "pill" | "bullet";
 
 export interface StatuslineBreakpoints {
-  compactBelow?: number; // default 85
-  hideOptionalBelow?: number; // default 65 (hides priority >= 3)
+  compactBelow?: number;
+  hideOptionalBelow?: number;
 }
 
-export type RenderTarget = "footer" | "editor-border";
+export type BoxSlotName = "topLeft" | "topRight" | "bottomLeft" | "bottomRight";
+export type RowSlotName = "left" | "center" | "right";
 
-export interface EditorBorderConfig {
+/** Segments embedded in the typing box border. */
+export interface BoxConfig {
   enabled: boolean;
-  borderStyle?: "rounded" | "single" | "double";
-  topSegments?: StatuslineSegment[];
-  bottomSegments?: StatuslineSegment[];
-}
-
-export interface StatuslineStyle {
-  border?: BorderStyle;
-  theme?: string;
-  target?: RenderTarget; // "footer" (default) or "editor-border"
-  separators?: {
-    left?: string;
-    right?: string;
-  };
-  separatorStyle?: SeparatorStyle;
+  border: BoxBorderStyle;
+  slots: Record<BoxSlotName, StatuslineSegment[]>;
 }
 
 export interface StatuslineRow {
@@ -62,13 +55,20 @@ export interface StatuslineRow {
   right: StatuslineSegment[];
 }
 
-export interface StatuslineConfig {
-  version: 1;
-  target?: RenderTarget;
-  style: StatuslineStyle;
-  breakpoints?: StatuslineBreakpoints;
-  editorBorder?: EditorBorderConfig;
+/** Rows rendered in the footer area (replaces Pi's built-in footer when enabled). */
+export interface FooterConfig {
+  enabled: boolean;
+  border: BorderStyle;
+  separatorStyle: SeparatorStyle;
   rows: StatuslineRow[];
+}
+
+export interface StatuslineConfig {
+  version: 2;
+  icons: IconSet;
+  breakpoints: StatuslineBreakpoints;
+  box: BoxConfig;
+  statusline: FooterConfig;
 }
 
 export const SEPARATOR_PRESETS: Record<SeparatorStyle, { left: string; right: string }> = {
@@ -81,45 +81,45 @@ export const SEPARATOR_PRESETS: Record<SeparatorStyle, { left: string; right: st
   bullet: { left: "•", right: "•" },
 };
 
+/** Separators that need a Nerd Font; replaced with `pipe` when icon set is not "nerd". */
+export const NERD_ONLY_SEPARATORS: SeparatorStyle[] = ["powerline", "powerline-thin", "pill"];
+
+export function emptyRow(): StatuslineRow {
+  return { left: [], center: [], right: [] };
+}
+
 export const DEFAULT_CONFIG: StatuslineConfig = {
-  version: 1,
-  target: "footer",
-  style: {
+  version: 2,
+  icons: "unicode",
+  breakpoints: { compactBelow: 85, hideOptionalBelow: 65 },
+  box: {
+    enabled: true,
     border: "rounded",
-    separatorStyle: "powerline",
-    separators: SEPARATOR_PRESETS.powerline,
-  },
-  breakpoints: {
-    compactBelow: 85,
-    hideOptionalBelow: 65,
-  },
-  editorBorder: {
-    enabled: false,
-    borderStyle: "rounded",
-    topSegments: [
-      { id: "top-1", type: "git_branch", icon: " ", color: "#a6e3a1" },
-      { id: "top-2", type: "cwd", icon: " ", color: "#89b4fa" },
-    ],
-    bottomSegments: [
-      { id: "bot-1", type: "model_name", icon: "󰚩 ", color: "#cdd6f4" },
-      { id: "bot-2", type: "context_gauge", icon: "󰾆 ", color: "#f9e2af", style: "blocks" },
-      { id: "bot-3", type: "session_cost", prefix: "$", color: "#f38ba8" },
-    ],
-  },
-  rows: [
-    {
-      left: [
-        { id: "seg-1", type: "git_branch", priority: 1, icon: " ", color: "#1e1e2e", bg: "#a6e3a1" },
-        { id: "seg-2", type: "model_name", priority: 1, icon: "󰚩 ", color: "#cdd6f4", bg: "#313244" },
+    slots: {
+      topLeft: [
+        { id: "b1", type: "git_branch", priority: 1, color: "#a6e3a1" },
+        { id: "b2", type: "cwd", priority: 3, color: "#89b4fa" },
       ],
-      center: [
-        { id: "seg-3", type: "context_gauge", priority: 2, style: "blocks", color: "#1e1e2e", bg: "#f9e2af" },
-      ],
-      right: [
-        { id: "seg-4", type: "cache_hit", priority: 3, icon: "⚡", color: "#1e1e2e", bg: "#94e2d5" },
-        { id: "seg-5", type: "token_usage", priority: 2, icon: "󰅒 ", color: "#1e1e2e", bg: "#89b4fa" },
-        { id: "seg-6", type: "session_cost", priority: 1, prefix: "$", color: "#1e1e2e", bg: "#f38ba8" },
+      topRight: [{ id: "b3", type: "thinking_level", priority: 2, color: "#cba6f7" }],
+      bottomLeft: [{ id: "b4", type: "model_name", priority: 1, color: "#89b4fa" }],
+      bottomRight: [
+        { id: "b5", type: "context_gauge", priority: 2, style: "blocks", color: "#a6e3a1" },
       ],
     },
-  ],
+  },
+  statusline: {
+    enabled: true,
+    border: "none",
+    separatorStyle: "pipe",
+    rows: [
+      {
+        left: [
+          { id: "s1", type: "session_cost", priority: 1, prefix: "$", color: "#f38ba8" },
+          { id: "s2", type: "token_usage", priority: 2, color: "#89b4fa" },
+        ],
+        center: [],
+        right: [{ id: "s3", type: "cache_hit", priority: 3, color: "#94e2d5" }],
+      },
+    ],
+  },
 };

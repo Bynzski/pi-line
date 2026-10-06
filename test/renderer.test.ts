@@ -1,92 +1,108 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { renderStatusline, filterSegmentsForWidth } from "../src/renderer.js";
-import { getMockContext, evaluateSegment, renderGauge, setBusMetric } from "../src/providers.js";
+import {
+  boxCorners,
+  effectiveSeparator,
+  filterSegmentsForWidth,
+  renderBoxBorders,
+  renderStatusline,
+} from "../src/renderer.js";
+import { evaluateSegment, getMockContext, renderGauge, setBusMetric } from "../src/providers.js";
+import { migrateV1 } from "../src/config.js";
 import { DEFAULT_CONFIG, type StatuslineConfig } from "../src/types.js";
+import { visibleWidth } from "@earendil-works/pi-tui";
 
-test("evaluateSegment produces expected formatted output for core tokens", () => {
-  const ctx = getMockContext();
-  const gitSeg = { id: "1", type: "git_branch" as const, icon: " " };
-  assert.equal(evaluateSegment(gitSeg, ctx), " main*");
+const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v));
+const ctx = getMockContext();
 
-  const modelSeg = { id: "2", type: "model_name" as const };
-  assert.equal(evaluateSegment(modelSeg, ctx), "claude-3-7-sonnet");
-
-  const costSeg = { id: "3", type: "session_cost" as const, prefix: "$" };
-  assert.equal(evaluateSegment(costSeg, ctx), "$0.18");
+test("segments use the icon set, with explicit icon and noIcon overrides", () => {
+  const git = { id: "1", type: "git_branch" as const };
+  assert.equal(evaluateSegment(git, ctx, false, "unicode"), "⎇ main");
+  assert.equal(evaluateSegment(git, ctx, false, "ascii"), "git:main");
+  assert.equal(evaluateSegment({ ...git, noIcon: true }, ctx, false, "unicode"), "main");
+  assert.equal(evaluateSegment({ ...git, icon: "@" }, ctx, false, "unicode"), "@main");
 });
 
-test("evaluateSegment renders cache hit ratio and dynamic bus tokens", () => {
-  const ctx = getMockContext();
-  const cacheSeg = { id: "c1", type: "cache_hit" as const, icon: "⚡" };
-  assert.equal(evaluateSegment(cacheSeg, ctx), "⚡47%");
-
-  setBusMetric("build_status", "passing");
-  const busSeg = { id: "b1", type: "custom_bus" as const, text: "build_status", prefix: "build:" };
-  assert.equal(evaluateSegment(busSeg, ctx), "build:passing");
+test("cache, bus, thinking and cost tokens", () => {
+  assert.equal(evaluateSegment({ id: "c", type: "cache_hit", noIcon: true }, ctx), "47%");
+  assert.equal(evaluateSegment({ id: "t", type: "thinking_level", noIcon: true }, ctx), "high");
+  assert.equal(evaluateSegment({ id: "s", type: "session_cost", prefix: "$", noIcon: true }, ctx), "$0.18");
+  setBusMetric("build", "passing");
+  assert.equal(evaluateSegment({ id: "b", type: "custom_bus", text: "build", noIcon: true }, ctx), "passing");
 });
 
-test("renderGauge renders block, braille, and percentage styles", () => {
-  const blocks = renderGauge(50, "blocks", 4);
-  assert.equal(blocks, "■■□□ 50%");
-
-  const braille = renderGauge(50, "braille", 4);
-  assert.equal(braille, "⣿⣿⣀⣀");
-
-  const pct = renderGauge(75, "percentage");
-  assert.equal(pct, "75%");
+test("renderGauge styles", () => {
+  assert.equal(renderGauge(50, "blocks", 4), "■■□□ 50%");
+  assert.equal(renderGauge(50, "braille", 4), "⣿⣿⣀⣀");
+  assert.equal(renderGauge(75, "percentage"), "75%");
 });
 
-test("filterSegmentsForWidth respects priority breakpoints", () => {
-  const segments = [
+test("priority breakpoints hide optional segments when narrow", () => {
+  const segs = [
     { id: "1", type: "git_branch" as const, priority: 1 },
     { id: "2", type: "cache_read" as const, priority: 4 },
   ];
-  // Standard width: all kept
-  const normal = filterSegmentsForWidth(segments, 100, DEFAULT_CONFIG);
-  assert.equal(normal.filtered.length, 2);
-  assert.equal(normal.isCompact, false);
-
-  // Narrow width (<65): priority 4 dropped
-  const narrow = filterSegmentsForWidth(segments, 60, DEFAULT_CONFIG);
+  assert.equal(filterSegmentsForWidth(segs, 100, DEFAULT_CONFIG.breakpoints).filtered.length, 2);
+  const narrow = filterSegmentsForWidth(segs, 60, DEFAULT_CONFIG.breakpoints);
   assert.equal(narrow.filtered.length, 1);
-  assert.equal(narrow.filtered[0]?.id, "1");
   assert.equal(narrow.isCompact, true);
 });
 
-test("renderStatusline handles different border geometries", () => {
-  const ctx = getMockContext();
+test("nerd-only separators fall back to pipe without nerd icons", () => {
+  assert.equal(effectiveSeparator("powerline", "unicode"), "pipe");
+  assert.equal(effectiveSeparator("powerline", "nerd"), "powerline");
+  assert.equal(effectiveSeparator("slash", "ascii"), "slash");
+});
 
-  const roundedConfig: StatuslineConfig = {
-    ...DEFAULT_CONFIG,
-    style: { ...DEFAULT_CONFIG.style, border: "rounded" },
-  };
-  const roundedLines = renderStatusline(roundedConfig, ctx, 80);
-  assert.equal(roundedLines.length, 3);
-  assert.ok(roundedLines[0]?.includes("╭"));
-  assert.ok(roundedLines[1]?.includes("│"));
-  assert.ok(roundedLines[2]?.includes("╰"));
+test("box borders embed segments independently on top and bottom, at exact width", () => {
+  for (const border of ["rounded", "single", "double"] as const) {
+    const cfg = clone(DEFAULT_CONFIG);
+    cfg.box.border = border;
+    for (const width of [30, 60, 120]) {
+      const { top, bottom } = renderBoxBorders(cfg.box, cfg.breakpoints, cfg.icons, ctx, width);
+      assert.equal(visibleWidth(top), width, `top ${border}@${width}`);
+      assert.equal(visibleWidth(bottom), width, `bottom ${border}@${width}`);
+      assert.ok(top.startsWith(boxCorners(border).top.left));
+      assert.ok(bottom.endsWith(boxCorners(border).bottom.right));
+    }
+  }
+  const { top, bottom } = renderBoxBorders(DEFAULT_CONFIG.box, DEFAULT_CONFIG.breakpoints, "unicode", ctx, 100);
+  assert.ok(top.includes("main"));
+  assert.ok(!top.includes("claude-opus-5"));
+  assert.ok(bottom.includes("claude-opus-5"));
+  assert.ok(!bottom.includes("main"));
+});
 
-  const singleConfig: StatuslineConfig = {
-    ...DEFAULT_CONFIG,
-    style: { ...DEFAULT_CONFIG.style, border: "single" },
-  };
-  const singleLines = renderStatusline(singleConfig, ctx, 80);
-  assert.ok(singleLines[0]?.includes("┌"));
-  assert.ok(singleLines[2]?.includes("└"));
+test("statusline renders every row within width and honors frames", () => {
+  const cfg: StatuslineConfig = clone(DEFAULT_CONFIG);
+  cfg.statusline.rows.push({ left: [{ id: "x", type: "cwd" }], center: [], right: [] });
+  for (const border of ["none", "top-only", "single", "rounded", "double"] as const) {
+    cfg.statusline.border = border;
+    const lines = renderStatusline(cfg.statusline, cfg.breakpoints, cfg.icons, ctx, 80);
+    for (const l of lines) assert.ok(visibleWidth(l) <= 80, `${border}: ${visibleWidth(l)}`);
+    const frame = border === "none" ? 0 : border === "top-only" ? 1 : 2;
+    assert.equal(lines.length, 2 + frame);
+  }
+});
 
-  const topOnlyConfig: StatuslineConfig = {
-    ...DEFAULT_CONFIG,
-    style: { ...DEFAULT_CONFIG.style, border: "top-only" },
-  };
-  const topOnlyLines = renderStatusline(topOnlyConfig, ctx, 80);
-  assert.equal(topOnlyLines.length, 2);
-  assert.ok(topOnlyLines[0]?.includes("─"));
+test("surfaces are independent: toggling one leaves the other untouched", () => {
+  const cfg = clone(DEFAULT_CONFIG);
+  const boxBefore = JSON.stringify(cfg.box);
+  cfg.statusline.enabled = false;
+  cfg.statusline.rows[0]!.left.push({ id: "z", type: "cwd" });
+  assert.equal(JSON.stringify(cfg.box), boxBefore);
+});
 
-  const borderlessConfig: StatuslineConfig = {
-    ...DEFAULT_CONFIG,
-    style: { ...DEFAULT_CONFIG.style, border: "none" },
+test("v1 configs migrate to v2", () => {
+  const v1 = {
+    version: 1,
+    target: "editor-border",
+    style: { border: "double", separatorStyle: "powerline" },
+    rows: [{ left: [{ id: "a", type: "git_branch", icon: "X" }], center: [], right: [] }],
   };
-  const borderlessLines = renderStatusline(borderlessConfig, ctx, 80);
-  assert.equal(borderlessLines.length, 1);
+  const v2 = migrateV1(v1);
+  assert.equal(v2.version, 2);
+  assert.equal(v2.box.enabled, true);
+  assert.equal(v2.statusline.enabled, false);
+  assert.equal(v2.statusline.rows[0]!.left[0]!.icon, undefined);
 });
