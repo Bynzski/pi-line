@@ -48,10 +48,26 @@ test("priority breakpoints hide optional segments when narrow", () => {
   assert.equal(narrow.isCompact, true);
 });
 
-test("nerd-only separators fall back to pipe without nerd icons", () => {
-  assert.equal(effectiveSeparator("powerline", "unicode"), "pipe");
+test("nerd-only separators fall back to blend without nerd icons", () => {
+  assert.equal(effectiveSeparator("powerline", "unicode"), "blend");
   assert.equal(effectiveSeparator("powerline", "nerd"), "powerline");
   assert.equal(effectiveSeparator("slash", "ascii"), "slash");
+});
+
+test("statusline supports minimal, subtle, pill and blend fill styles", () => {
+  const cfg = clone(DEFAULT_CONFIG);
+  for (const style of ["flat", "minimal", "subtle", "pill"] as const) {
+    cfg.statusline.fillStyle = style;
+    const lines = renderStatusline(cfg.statusline, cfg.breakpoints, "unicode", ctx, 80);
+    assert.ok(lines.length >= 1);
+    assert.ok(visibleWidth(lines[0]!) <= 80);
+  }
+
+  cfg.statusline.separatorStyle = "blend";
+  cfg.statusline.fillStyle = "flat";
+  const blendLines = renderStatusline(cfg.statusline, cfg.breakpoints, "unicode", ctx, 80);
+  assert.ok(blendLines.length >= 1);
+  assert.ok(blendLines[0]!.includes("▌"));
 });
 
 test("box borders embed segments independently on top and bottom, at exact width", () => {

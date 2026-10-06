@@ -32,7 +32,17 @@ export interface StatuslineSegment {
 export type IconSet = "nerd" | "unicode" | "ascii";
 export type BorderStyle = "none" | "single" | "rounded" | "double" | "top-only";
 export type BoxBorderStyle = "rounded" | "single" | "double";
-export type SeparatorStyle = "none" | "powerline" | "powerline-thin" | "slash" | "pipe" | "pill" | "bullet";
+export type SeparatorStyle =
+  | "none"
+  | "powerline"
+  | "powerline-thin"
+  | "pill"
+  | "blend"
+  | "slash"
+  | "pipe"
+  | "bullet";
+
+export type SegmentFillStyle = "flat" | "minimal" | "pill" | "subtle";
 
 export interface StatuslineBreakpoints {
   compactBelow?: number;
@@ -60,6 +70,7 @@ export interface FooterConfig {
   enabled: boolean;
   border: BorderStyle;
   separatorStyle: SeparatorStyle;
+  fillStyle?: SegmentFillStyle; // "flat" (default blocky), "minimal" (text-only fg), "pill", "subtle"
   rows: StatuslineRow[];
 }
 
@@ -75,13 +86,14 @@ export const SEPARATOR_PRESETS: Record<SeparatorStyle, { left: string; right: st
   none: { left: "", right: "" },
   powerline: { left: "\uE0B0", right: "\uE0B2" },
   "powerline-thin": { left: "\uE0B1", right: "\uE0B3" },
+  pill: { left: "\uE0B4", right: "\uE0B6" },
+  blend: { left: "▌", right: "▐" },
   slash: { left: "/", right: "/" },
   pipe: { left: "│", right: "│" },
-  pill: { left: "\uE0B4", right: "\uE0B6" },
   bullet: { left: "•", right: "•" },
 };
 
-/** Separators that need a Nerd Font; replaced with `pipe` when icon set is not "nerd". */
+/** Separators that need a Nerd Font; replaced when icon set is not "nerd". */
 export const NERD_ONLY_SEPARATORS: SeparatorStyle[] = ["powerline", "powerline-thin", "pill"];
 
 export function emptyRow(): StatuslineRow {
@@ -110,15 +122,17 @@ export const DEFAULT_CONFIG: StatuslineConfig = {
   statusline: {
     enabled: true,
     border: "none",
-    separatorStyle: "pipe",
+    separatorStyle: "powerline",
+    fillStyle: "flat",
     rows: [
       {
         left: [
-          { id: "s1", type: "session_cost", priority: 1, prefix: "$", color: "#f38ba8" },
-          { id: "s2", type: "token_usage", priority: 2, color: "#89b4fa" },
+          { id: "s1", type: "session_cost", priority: 1, prefix: "$", color: "#1e1e2e", bg: "#f38ba8" },
+          { id: "s2", type: "token_usage", priority: 2, color: "#1e1e2e", bg: "#89b4fa" },
+          { id: "s3", type: "thinking_level", priority: 3, color: "#1e1e2e", bg: "#fab387" },
         ],
         center: [],
-        right: [{ id: "s3", type: "cache_hit", priority: 3, color: "#94e2d5" }],
+        right: [{ id: "s4", type: "cache_hit", priority: 3, color: "#1e1e2e", bg: "#94e2d5" }],
       },
     ],
   },

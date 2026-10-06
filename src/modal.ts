@@ -52,7 +52,8 @@ const SEGMENT_CATALOG: { type: SegmentType; label: string; color: string; priori
 const FG_PALETTE: (string | undefined)[] = [undefined, "#cdd6f4", "#a6e3a1", "#89b4fa", "#f9e2af", "#f38ba8", "#cba6f7", "#94e2d5", "#fab387", "#6c7086"];
 const BG_PALETTE: (string | undefined)[] = [undefined, "#1e1e2e", "#313244", "#45475a", "#a6e3a1", "#89b4fa", "#f9e2af", "#f38ba8", "#cba6f7", "#94e2d5"];
 
-const SEPARATORS: SeparatorStyle[] = ["pipe", "slash", "bullet", "none", "powerline", "powerline-thin", "pill"];
+const SEPARATORS: SeparatorStyle[] = ["pipe", "blend", "slash", "bullet", "none", "powerline", "powerline-thin", "pill"];
+const FILL_STYLES: ("flat" | "minimal" | "pill" | "subtle")[] = ["flat", "minimal", "pill", "subtle"];
 const FOOTER_BORDERS: BorderStyle[] = ["none", "top-only", "single", "rounded", "double"];
 const BOX_BORDERS: BoxBorderStyle[] = ["rounded", "single", "double"];
 const ICON_SETS: IconSet[] = ["unicode", "ascii", "nerd"];
@@ -113,6 +114,7 @@ export class StatuslineEditorModal implements Component, Focusable {
         out.push({ kind: "slot", label: `Row ${i + 1} right `, list: row.right, row: i });
       });
       out.push({ kind: "setting", label: "Statusline enabled", value: c.statusline.enabled ? "on" : "off", change: () => (c.statusline.enabled = !c.statusline.enabled) });
+      out.push({ kind: "setting", label: "Segment style     ", value: c.statusline.fillStyle || "flat", change: (d) => (c.statusline.fillStyle = cycle(FILL_STYLES, c.statusline.fillStyle || "flat", d)) });
       out.push({ kind: "setting", label: "Frame             ", value: c.statusline.border, change: (d) => (c.statusline.border = cycle(FOOTER_BORDERS, c.statusline.border, d)) });
       out.push({ kind: "setting", label: "Separators        ", value: c.statusline.separatorStyle, change: (d) => (c.statusline.separatorStyle = cycle(SEPARATORS, c.statusline.separatorStyle, d)) });
       return out;
