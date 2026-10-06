@@ -9,7 +9,7 @@ import {
 import { type EditorTheme, type TUI, truncateToWidth } from "@earendil-works/pi-tui";
 import { loadConfig, saveConfig } from "./config.js";
 import { extractStatuslineContext, getMockContext, gitState, setBusMetric, type StatuslineContext } from "./providers.js";
-import { renderBoxBorders, renderStatusline } from "./renderer.js";
+import { boxCorners, renderBoxBorders, renderStatusline } from "./renderer.js";
 import { StatuslineEditorModal } from "./modal.js";
 import type { StatuslineConfig } from "./types.js";
 
@@ -34,7 +34,8 @@ function snapshot(ctx: ExtensionContext): StatuslineContext {
 
 class EmbeddedBorderEditor extends CustomEditor {
   constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager, private extCtx: ExtensionContext) {
-    super(tui, theme, keybindings, { paddingX: 0 });
+    // paddingX: 1 gives comfortable breathing room between left border and text
+    super(tui, theme, keybindings, { paddingX: 1 });
     activeTuis.add(tui);
   }
 
@@ -45,13 +46,34 @@ class EmbeddedBorderEditor extends CustomEditor {
     );
   }
 
-  // When the editor is scrolled it shows a "N more" hint in the border; keep that behavior.
-  protected renderTopBorder(width: number, hiddenLineCount: number): string {
-    return hiddenLineCount > 0 ? super.renderTopBorder(width, hiddenLineCount) : this.borders(width).top;
-  }
+  render(width: number): string[] {
+    const cfg = currentConfig;
+    // Calculate inner width subtracting 2 columns for left and right vertical borders
+    const innerWidth = Math.max(10, width - 2);
+    const rawLines = super.render(innerWidth);
+    if (rawLines.length < 2) return rawLines;
 
-  protected renderBottomBorder(width: number, hiddenLineCount: number): string {
-    return hiddenLineCount > 0 ? super.renderBottomBorder(width, hiddenLineCount) : this.borders(width).bottom;
+    const corners = boxCorners(cfg.box.border);
+    const v = this.borderColor(corners.v);
+
+    const out: string[] = [];
+    const topIdx = 0;
+    const botIdx = rawLines.length - 1;
+
+    for (let i = 0; i < rawLines.length; i++) {
+      if (i === topIdx) {
+        // Top border with embedded tokens
+        out.push(this.borders(width).top);
+      } else if (i === botIdx) {
+        // Bottom border with embedded tokens
+        out.push(this.borders(width).bottom);
+      } else {
+        // Middle text lines: wrap with left and right vertical borders
+        const middle = rawLines[i]!;
+        out.push(`${v}${middle}${v}`);
+      }
+    }
+    return out;
   }
 }
 
