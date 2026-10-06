@@ -36,9 +36,19 @@ export interface StatuslineBreakpoints {
   hideOptionalBelow?: number; // default 65 (hides priority >= 3)
 }
 
+export type RenderTarget = "footer" | "editor-border";
+
+export interface EditorBorderConfig {
+  enabled: boolean;
+  borderStyle?: "rounded" | "single" | "double";
+  topSegments?: StatuslineSegment[];
+  bottomSegments?: StatuslineSegment[];
+}
+
 export interface StatuslineStyle {
   border?: BorderStyle;
   theme?: string;
+  target?: RenderTarget; // "footer" (default) or "editor-border"
   separators?: {
     left?: string;
     right?: string;
@@ -54,8 +64,10 @@ export interface StatuslineRow {
 
 export interface StatuslineConfig {
   version: 1;
+  target?: RenderTarget;
   style: StatuslineStyle;
   breakpoints?: StatuslineBreakpoints;
+  editorBorder?: EditorBorderConfig;
   rows: StatuslineRow[];
 }
 
@@ -71,6 +83,7 @@ export const SEPARATOR_PRESETS: Record<SeparatorStyle, { left: string; right: st
 
 export const DEFAULT_CONFIG: StatuslineConfig = {
   version: 1,
+  target: "footer",
   style: {
     border: "rounded",
     separatorStyle: "powerline",
@@ -79,6 +92,19 @@ export const DEFAULT_CONFIG: StatuslineConfig = {
   breakpoints: {
     compactBelow: 85,
     hideOptionalBelow: 65,
+  },
+  editorBorder: {
+    enabled: false,
+    borderStyle: "rounded",
+    topSegments: [
+      { id: "top-1", type: "git_branch", icon: " ", color: "#a6e3a1" },
+      { id: "top-2", type: "cwd", icon: " ", color: "#89b4fa" },
+    ],
+    bottomSegments: [
+      { id: "bot-1", type: "model_name", icon: "󰚩 ", color: "#cdd6f4" },
+      { id: "bot-2", type: "context_gauge", icon: "󰾆 ", color: "#f9e2af", style: "blocks" },
+      { id: "bot-3", type: "session_cost", prefix: "$", color: "#f38ba8" },
+    ],
   },
   rows: [
     {

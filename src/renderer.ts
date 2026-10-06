@@ -154,9 +154,6 @@ export function renderStatusline(
   }
 
   if (border === "rounded") {
-    // ╭──────╮
-    // │ content │
-    // ╰──────╯
     const innerWidth = Math.max(10, width - 2);
     lines.push("╭" + "─".repeat(innerWidth) + "╮");
     for (const row of config.rows) {
@@ -170,9 +167,6 @@ export function renderStatusline(
   }
 
   if (border === "single") {
-    // ┌──────┐
-    // │ content │
-    // └──────┘
     const innerWidth = Math.max(10, width - 2);
     lines.push("┌" + "─".repeat(innerWidth) + "┐");
     for (const row of config.rows) {
@@ -186,9 +180,6 @@ export function renderStatusline(
   }
 
   if (border === "double") {
-    // ╔══════╗
-    // ║ content ║
-    // ╚══════╝
     const innerWidth = Math.max(10, width - 2);
     lines.push("╔" + "═".repeat(innerWidth) + "╗");
     for (const row of config.rows) {
@@ -206,4 +197,58 @@ export function renderStatusline(
     lines.push(renderRowContent(row, config, context, width, mode));
   }
   return lines;
+}
+
+/**
+ * Formats a horizontal border line with embedded segments (for CustomEditor top/bottom borders).
+ * e.g. ╭──  main  ~ ───────────────────────── ~/Projects ──╮
+ */
+export function formatEditorBorderLine(
+  leftSegments: StatuslineSegment[],
+  rightSegments: StatuslineSegment[],
+  context: StatuslineContext,
+  width: number,
+  borderCornerLeft: string,
+  borderCornerRight: string,
+  borderFillChar = "─",
+  mode: TerminalColorMode = "truecolor"
+): string {
+  if (width <= 0) return "";
+  const fixedCornersWidth = visibleWidth(borderCornerLeft) + visibleWidth(borderCornerRight);
+  if (width <= fixedCornersWidth) {
+    return borderCornerLeft + borderCornerRight;
+  }
+
+  const formatSegs = (segs: StatuslineSegment[]) => {
+    return segs
+      .map((s) => {
+        const val = evaluateSegment(s, context);
+        if (!val) return "";
+        const fg = s.color ? parseColor(s.color) : undefined;
+        const bg = s.bg ? parseColor(s.bg) : undefined;
+        return styleText(` ${val} `, { fg, bg }, mode);
+      })
+      .filter(Boolean)
+      .join("");
+  };
+
+  let leftText = formatSegs(leftSegments);
+  let rightText = formatSegs(rightSegments);
+
+  const availableInside = width - fixedCornersWidth;
+  const leftW = visibleWidth(leftText);
+  const rightW = visibleWidth(rightText);
+
+  if (leftW + rightW + 2 > availableInside) {
+    // Truncate if too long
+    const gap = 1;
+    const maxLeft = Math.floor((availableInside - gap) / 2);
+    leftText = truncateToWidth(leftText, maxLeft, "");
+    rightText = truncateToWidth(rightText, Math.max(0, availableInside - gap - visibleWidth(leftText)), "");
+  }
+
+  const remainingGap = Math.max(0, availableInside - visibleWidth(leftText) - visibleWidth(rightText));
+  const fill = borderFillChar.repeat(remainingGap);
+
+  return `${borderCornerLeft}${leftText}${fill}${rightText}${borderCornerRight}`;
 }

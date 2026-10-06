@@ -10,13 +10,14 @@ import {
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import {
   type BorderStyle,
+  type RenderTarget,
   type SegmentType,
   type SeparatorStyle,
   type StatuslineConfig,
   type StatuslineSegment,
   SEPARATOR_PRESETS,
 } from "./types.js";
-import { renderStatusline } from "./renderer.js";
+import { renderStatusline, formatEditorBorderLine } from "./renderer.js";
 import { getMockContext } from "./providers.js";
 
 const AVAILABLE_SEGMENTS: {
@@ -56,6 +57,7 @@ const SEPARATOR_CHOICES: SeparatorStyle[] = [
 ];
 
 const BORDER_CHOICES: BorderStyle[] = ["rounded", "single", "double", "top-only", "none"];
+const TARGET_CHOICES: RenderTarget[] = ["footer", "editor-border"];
 
 export class StatuslineEditorModal implements Component, Focusable {
   focused = true;
@@ -63,7 +65,7 @@ export class StatuslineEditorModal implements Component, Focusable {
   private activeZone: "slots" | "inspector" | "add_dialog" = "slots";
   private selectedPosition: "left" | "center" | "right" = "left";
   private selectedSlotIndex = 0;
-  private selectedInspectorField = 0; // 0: separator, 1: border
+  private selectedInspectorField = 0; // 0: target, 1: separator, 2: border
   private selectedAddTypeIndex = 0;
 
   private config: StatuslineConfig;
@@ -95,7 +97,6 @@ export class StatuslineEditorModal implements Component, Focusable {
   }
 
   handleInput(data: string): void {
-    // Check key presses
     if (matchesKey(data, "escape")) {
       if (this.activeZone === "add_dialog") {
         this.activeZone = "slots";
@@ -133,7 +134,6 @@ export class StatuslineEditorModal implements Component, Focusable {
     const row = this.config.rows[0]!;
 
     // Position switching via numeric keys (1=left, 2=center, 3=right)
-    // Also support keypad or character codes
     if (data === "1" || data === "l" || data === "L") {
       this.selectedPosition = "left";
       this.selectedSlotIndex = Math.min(this.selectedSlotIndex, Math.max(0, row.left.length - 1));
@@ -155,7 +155,7 @@ export class StatuslineEditorModal implements Component, Focusable {
 
     const slots = this.getActiveSlotList();
 
-    // Move slot up or down across sections (Left <-> Center <-> Right)
+    // Up / Down navigate sections
     if (matchesKey(data, "up")) {
       if (this.selectedPosition === "right") this.selectedPosition = "center";
       else if (this.selectedPosition === "center") this.selectedPosition = "left";
@@ -256,13 +256,29 @@ export class StatuslineEditorModal implements Component, Focusable {
   }
 
   private handleInspectorInput(data: string): void {
-    if (matchesKey(data, "up") || matchesKey(data, "down")) {
-      this.selectedInspectorField = this.selectedInspectorField === 0 ? 1 : 0;
+    if (matchesKey(data, "up")) {
+      this.selectedInspectorField = (this.selectedInspectorField - 1 + 3) % 3;
+      this.tui.requestRender();
+      return;
+    }
+    if (matchesKey(data, "down")) {
+      this.selectedInspectorField = (this.selectedInspectorField + 1) % 3;
       this.tui.requestRender();
       return;
     }
 
     if (this.selectedInspectorField === 0) {
+      // Render Target toggle (footer vs editor-border)
+      const current = this.config.target || "footer";
+      const next = current === "footer" ? "editor-border" : "footer";
+      if (matchesKey(data, "left") || matchesKey(data, "right") || matchesKey(data, "enter")) {
+        this.config.target = next;
+        this.tui.requestRender();
+      }
+      return;
+    }
+
+    if (this.selectedInspectorField === 1) {
       // Separator style cycling
       const current = this.config.style.separatorStyle || "powerline";
       const idx = SEPARATOR_CHOICES.indexOf(current);
@@ -279,7 +295,7 @@ export class StatuslineEditorModal implements Component, Focusable {
       return;
     }
 
-    if (this.selectedInspectorField === 1) {
+    if (this.selectedInspectorField === 2) {
       // Border style cycling
       const current = this.config.style.border || "rounded";
       const idx = BORDER_CHOICES.indexOf(current);
@@ -337,22 +353,34 @@ export class StatuslineEditorModal implements Component, Focusable {
     lines.push(bColor("╭" + "─".repeat(contentWidth + 2) + "╮"));
 
     // Header Title
-    const headerTitle = " 󰌌  PI STATUSLINE VISUAL BUILDER ";
+    const headerTitle = " 󰌌  PI STATUSLINE & BORDER BUILDER ";
     const headerPad = Math.max(0, contentWidth + 2 - visibleWidth(headerTitle));
     lines.push(bColor("│") + title(headerTitle) + " ".repeat(headerPad) + bColor("│"));
     lines.push(bColor("├" + "─".repeat(contentWidth + 2) + "┤"));
 
     // 1. LIVE PREVIEW PANE
-    const borderLabel = `Border: ${this.config.style.border || "none"} | Sep: ${this.config.style.separatorStyle || "powerline"}`;
+    const target = this.config.target || "footer";
+    const borderLabel = `Target: ${target} | Border: ${this.config.style.border || "rounded"} | Sep: ${this.config.style.separatorStyle || "powerline"}`;
     const pHeader = ` 1. LIVE PREVIEW PANE (${borderLabel})`;
     lines.push(bColor("│") + dim(pHeader) + " ".repeat(Math.max(0, contentWidth + 2 - visibleWidth(pHeader))) + bColor("│"));
 
     const mockContext = getMockContext();
-    const previewLines = renderStatusline(this.config, mockContext, contentWidth);
-    for (const pLine of previewLines) {
-      const pW = visibleWidth(pLine);
-      const pad = " ".repeat(Math.max(0, contentWidth - pW));
-      lines.push(bColor("│ ") + pLine + pad + bColor(" │"));
+    if (target === "editor-border") {
+      // Simulate typing box with embedded border preview
+      const row = this.config.rows[0] || { left: [], center: [], right: [] };
+      const topBorder = formatEditorBorderLine(row.left, row.right, mockContext, contentWidth - 4, "╭─", "─╮");
+      lines.push(bColor("│  ") + topBorder + bColor("  │"));
+      const promptLine = "│  │ make the README say what the harness brings █" + " ".repeat(Math.max(0, contentWidth - 52)) + "│  │";
+      lines.push(bColor(promptLine));
+      const bottomBorder = formatEditorBorderLine(row.center, row.right, mockContext, contentWidth - 4, "╰─", "─╯");
+      lines.push(bColor("│  ") + bottomBorder + bColor("  │"));
+    } else {
+      const previewLines = renderStatusline(this.config, mockContext, contentWidth);
+      for (const pLine of previewLines) {
+        const pW = visibleWidth(pLine);
+        const pad = " ".repeat(Math.max(0, contentWidth - pW));
+        lines.push(bColor("│ ") + pLine + pad + bColor(" │"));
+      }
     }
 
     lines.push(bColor("├" + "─".repeat(contentWidth + 2) + "┤"));
@@ -401,21 +429,28 @@ export class StatuslineEditorModal implements Component, Focusable {
 
     // 3. STYLE & DIVIDER INSPECTOR
     const inspZoneActive = this.activeZone === "inspector";
-    const inspHeader = ` 3. STYLE & DIVIDER INSPECTOR ${inspZoneActive ? "◄ ACTIVE (Tab to switch)" : ""}`;
+    const inspHeader = ` 3. STYLE & LOCATION INSPECTOR ${inspZoneActive ? "◄ ACTIVE (Tab to switch)" : ""}`;
     lines.push(bColor("│") + (inspZoneActive ? title(inspHeader) : dim(inspHeader)) + " ".repeat(Math.max(0, contentWidth + 2 - visibleWidth(inspHeader))) + bColor("│"));
+
+    // Target row (footer vs editor-border)
+    const curTarget = this.config.target || "footer";
+    const targetStr = TARGET_CHOICES.map((t) => (t === curTarget ? this.theme.style(`❯ ${t} ❮`, { bold: true, fg: "accent" }) : t)).join(" | ");
+    const targetFocusMarker = inspZoneActive && this.selectedInspectorField === 0 ? "▶ " : "  ";
+    const targetFull = `  ${targetFocusMarker}Render Target: [ ${targetStr} ]`;
+    lines.push(bColor("│") + targetFull + " ".repeat(Math.max(0, contentWidth + 2 - visibleWidth(targetFull))) + bColor("│"));
 
     // Separators row
     const curSep = this.config.style.separatorStyle || "powerline";
     const sepStr = SEPARATOR_CHOICES.map((s) => (s === curSep ? this.theme.style(`❯ ${s} ❮`, { bold: true, fg: "accent" }) : s)).join(" | ");
-    const sepFocusMarker = inspZoneActive && this.selectedInspectorField === 0 ? "▶ " : "  ";
-    const sepFull = `  ${sepFocusMarker}Separators: [ ${sepStr} ]`;
+    const sepFocusMarker = inspZoneActive && this.selectedInspectorField === 1 ? "▶ " : "  ";
+    const sepFull = `  ${sepFocusMarker}Separators:    [ ${sepStr} ]`;
     lines.push(bColor("│") + sepFull + " ".repeat(Math.max(0, contentWidth + 2 - visibleWidth(sepFull))) + bColor("│"));
 
     // Border row
     const curBorder = this.config.style.border || "rounded";
     const borderStr = BORDER_CHOICES.map((b) => (b === curBorder ? this.theme.style(`❯ ${b} ❮`, { bold: true, fg: "accent" }) : b)).join(" | ");
-    const borderFocusMarker = inspZoneActive && this.selectedInspectorField === 1 ? "▶ " : "  ";
-    const borderFull = `  ${borderFocusMarker}Border:     [ ${borderStr} ]`;
+    const borderFocusMarker = inspZoneActive && this.selectedInspectorField === 2 ? "▶ " : "  ";
+    const borderFull = `  ${borderFocusMarker}Border Box:    [ ${borderStr} ]`;
     lines.push(bColor("│") + borderFull + " ".repeat(Math.max(0, contentWidth + 2 - visibleWidth(borderFull))) + bColor("│"));
 
     // If Add Dialog is open, overlay options
