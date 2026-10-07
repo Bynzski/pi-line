@@ -14,7 +14,7 @@ Unlike extensions that require manually editing JSON files or relying on LLM too
 
 1. **Typing-Box Borders**: Embed real-time telemetry (Git branch, active model, thinking level, context gauges) directly into the typing box's top and bottom frames with seamless, connected vertical borders and clean text padding.
 2. **Bottom Statusline (Footer)**: Multi-row statusline with Left, Center, and Right alignment zones, color-blending separators, multiple visual fill styles (`flat`, `pill`, `subtle`, `minimal`), and frame geometries.
-3. **Dual Independent Surfaces**: Enable and customize either surface—or both simultaneously—without one interfering with the other.
+3. **Dual Independent Surfaces**: Enable and customize either surface—or both simultaneously—without one interfering with the other. Turning the statusline off hides the footer entirely, including Pi's built-in footer.
 
 ---
 

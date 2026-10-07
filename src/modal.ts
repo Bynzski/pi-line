@@ -287,7 +287,7 @@ export class StatuslineEditorModal implements Component, Focusable {
     if (c.statusline.enabled) {
       for (const l of renderStatusline(c.statusline, c.breakpoints, c.icons, mock, w, mode)) prev.push(line(l));
     } else {
-      prev.push(line(dim("(statusline off — Pi's built-in footer is shown)")));
+      prev.push(line(dim("(statusline off — footer hidden)")));
     }
     prev.push(rule("├", "┤"));
 

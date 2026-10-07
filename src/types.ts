@@ -65,7 +65,7 @@ export interface StatuslineRow {
   right: StatuslineSegment[];
 }
 
-/** Rows rendered in the footer area (replaces Pi's built-in footer when enabled). */
+/** Rows rendered in the footer area (replaces Pi's built-in footer; hidden when disabled). */
 export interface FooterConfig {
   enabled: boolean;
   border: BorderStyle;

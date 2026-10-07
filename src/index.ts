@@ -108,7 +108,13 @@ function applyLayout(ctx: ExtensionContext): void {
     });
   } else {
     footerData = undefined;
-    ctx.ui.setFooter(undefined); // Pi's built-in footer
+    // Clearing the factory restores Pi's built-in footer; keep an empty one instead.
+    ctx.ui.setFooter(() => ({
+      invalidate() {},
+      render(): string[] {
+        return [];
+      },
+    }));
   }
 }
 
