@@ -33,6 +33,7 @@ const TABS: { id: Tab; label: string }[] = [
 const SEGMENT_CATALOG: { type: SegmentType; label: string; color: string; priority: number; style?: StatuslineSegment["style"] }[] = [
   { type: "git_branch", label: "Git branch", color: "#a6e3a1", priority: 1 },
   { type: "git_dirty", label: "Git dirty count", color: "#f9e2af", priority: 3 },
+  { type: "git_worktree", label: "Git worktree", color: "#fab387", priority: 2 },
   { type: "model_name", label: "Model", color: "#89b4fa", priority: 1 },
   { type: "provider_name", label: "Provider", color: "#74c7ec", priority: 4 },
   { type: "thinking_level", label: "Thinking level", color: "#cba6f7", priority: 2 },

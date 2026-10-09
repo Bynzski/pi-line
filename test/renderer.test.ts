@@ -122,3 +122,21 @@ test("v1 configs migrate to v2", () => {
   assert.equal(v2.statusline.enabled, false);
   assert.equal(v2.statusline.rows[0]!.left[0]!.icon, undefined);
 });
+
+test("git_worktree segment renders in worktrees and collapses when not in a worktree", () => {
+  const seg = { id: "wt", type: "git_worktree" as const };
+  // Mock context has gitWorktree: "feat-worktree"
+  assert.equal(evaluateSegment(seg, ctx, false, "unicode"), "⑂ feat-worktree");
+  assert.equal(evaluateSegment(seg, ctx, false, "ascii"), "wt:feat-worktree");
+  assert.equal(evaluateSegment(seg, ctx, false, "nerd"), "\uF126 feat-worktree");
+  assert.equal(evaluateSegment({ ...seg, noIcon: true }, ctx, false, "unicode"), "feat-worktree");
+  assert.equal(evaluateSegment({ ...seg, noIcon: true, prefix: "[", suffix: "]" }, ctx, false, "unicode"), "[feat-worktree]");
+  assert.equal(evaluateSegment({ ...seg, text: "wt" }, ctx, false, "unicode"), "⑂ wt");
+  assert.equal(evaluateSegment(seg, ctx, true, "unicode"), "⑂ wt");
+
+  // When not in a worktree
+  const noWtCtx = { ...ctx, gitWorktree: null };
+  assert.equal(evaluateSegment(seg, noWtCtx, false, "unicode"), "");
+  assert.equal(evaluateSegment({ ...seg, prefix: "wt:" }, noWtCtx, false, "unicode"), "");
+});
+

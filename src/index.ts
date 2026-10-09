@@ -1,3 +1,5 @@
+import * as fs from "node:fs";
+import * as path from "node:path";
 import {
   CustomEditor,
   type ExtensionAPI,
@@ -12,6 +14,14 @@ import { extractStatuslineContext, getMockContext, gitState, setBusMetric, type 
 import { boxCorners, renderBoxBorders, renderStatusline } from "./renderer.js";
 import { StatuslineEditorModal } from "./modal.js";
 import type { StatuslineConfig } from "./types.js";
+
+function safeRealpath(p: string): string {
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    return p;
+  }
+}
 
 let currentConfig: StatuslineConfig = loadConfig();
 const activeTuis = new Set<TUI>();
@@ -125,14 +135,35 @@ export default function (pi: ExtensionAPI) {
       if (b.code !== 0) {
         gitState.branch = null;
         gitState.dirty = 0;
+        gitState.worktree = null;
       } else {
         gitState.branch = b.stdout.trim() || "detached";
-        const s = await pi.exec("git", ["status", "--porcelain"], { cwd, timeout: 3000 });
+        const [s, wt] = await Promise.all([
+          pi.exec("git", ["status", "--porcelain"], { cwd, timeout: 3000 }),
+          pi.exec("git", ["rev-parse", "--git-dir", "--git-common-dir", "--show-toplevel"], { cwd, timeout: 3000 }),
+        ]);
         gitState.dirty = s.code === 0 ? s.stdout.split("\n").filter(Boolean).length : 0;
+        if (wt.code === 0) {
+          const lines = wt.stdout.trim().split(/\r?\n/).map((l) => l.trim());
+          if (lines.length >= 3 && lines[0] && lines[1] && lines[2]) {
+            const gitDir = safeRealpath(path.resolve(cwd, lines[0]));
+            const commonDir = safeRealpath(path.resolve(cwd, lines[1]));
+            if (gitDir !== commonDir) {
+              gitState.worktree = path.basename(lines[2]);
+            } else {
+              gitState.worktree = null;
+            }
+          } else {
+            gitState.worktree = null;
+          }
+        } else {
+          gitState.worktree = null;
+        }
       }
     } catch {
       gitState.branch = null;
       gitState.dirty = 0;
+      gitState.worktree = null;
     }
     requestRender();
   };

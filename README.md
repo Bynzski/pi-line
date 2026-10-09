@@ -74,7 +74,7 @@ In `~/.pi/agent/settings.json`:
   - Mini-gauges in block format (`■■□□□ 34%`), Braille (`⣿⣿⣀⣀`), or percentage.
   - Prompt cache metrics: hit ratio (`⚡47%`) and cache read tokens.
   - Live token counters (`↑42.1k ↓12.1k`) and running session financial spend.
-  - Shared Git metadata updating reactively across turns.
+  - Shared Git metadata updating reactively across turns (branch, dirty changes count, and linked Git worktree detection via `git_worktree`).
 - **Responsive Breakpoints**:
   - Set column thresholds (`compactBelow`, `hideOptionalBelow`).
   - Assign priority tiers (`P1` to `P5`) to automatically collapse or drop lower-priority segments on narrow terminals.

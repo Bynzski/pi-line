@@ -1,6 +1,7 @@
 export type SegmentType =
   | "git_branch"
   | "git_dirty"
+  | "git_worktree"
   | "model_name"
   | "provider_name"
   | "thinking_level"
